@@ -172,7 +172,14 @@ export class LearningAgent {
     avgScore: 0,           // Average score per game
     winRate: 0,            // Win percentage
     exploration: 0.3,      // Current exploration rate (epsilon)
-    episodesCompleted: 0   // Training episodes/matches completed
+    episodesCompleted: 0,  // Training episodes/matches completed
+    // BREAKTHROUGH TRACKING
+    lastImprovement: 0,    // Episode of last win rate improvement
+    plateauLength: 0,      // Episodes since last improvement
+    bestWinRate: 0,        // Best win rate achieved
+    breakthroughCount: 0,  // Number of breakthrough events triggered
+    breakthroughActive: 0, // Episodes remaining in breakthrough mode
+    breakthroughEpsilon: 0 // Target epsilon during breakthrough
   };
   
   // Track which games we've already counted to avoid double-counting
@@ -221,20 +228,23 @@ export class LearningAgent {
 
   constructor(config: AgentConfig = {}) {
     // Apply configuration
-    this.epsilon = config.epsilon ?? 0.5;    // HIGH exploration to discover strategies
-    this.alpha = config.alpha ?? 0.2;        // Fast learning in warzone
-    this.gamma = config.gamma ?? 0.95;       // Balance immediate and future
+    this.epsilon = config.epsilon ?? 0.95;    // Start at 95% exploration (nearly pure random)
+    this.alpha = config.alpha ?? 0.25;        // Start with fast learning, will decay
+    this.gamma = config.gamma ?? 0.95;        // Discount factor
     this.name = config.name ?? 'Warzone';
     
-    // In WARZONE mode, ignore persona configs - only winning matters
+    // In WARZONE mode, start with maximum exploration and fast learning
     const isWarzone = config.name?.includes('Warzone');
     if (isWarzone) {
-      // Force pure competition settings
-      this.epsilon = 0.5;  // High exploration initially
-      this.alpha = 0.25;   // Very fast learning
-      this.gamma = 0.95;   // Balanced horizon
+      // Start nearly pure random, will decay based on performance
+      this.epsilon = 0.95;  // 95% random initially
+      this.alpha = 0.25;    // Start fast, will decay dynamically
+      this.gamma = 0.95;    // Balanced horizon
     } else if (config.rewardWeights) {
-      // Legacy persona mode (backwards compatibility)
+      // Legacy persona mode - still start high but decay faster
+      this.epsilon = 0.8;   // 80% random initially for legacy
+      this.alpha = 0.20;    // Slightly slower initial learning for legacy
+      
       this.rewards.pointGain = config.rewardWeights.pointGain ?? this.rewards.pointGain;
       this.rewards.winGame = config.rewardWeights.winBonus ?? this.rewards.winGame;
       this.rewards.position2nd = config.rewardWeights.positionBonus ?? this.rewards.position2nd;
@@ -723,19 +733,51 @@ export class LearningAgent {
     
     // Epsilon-greedy: explore vs exploit
     if (Math.random() < this.epsilon) {
-      // Explore: random action
+      // EXPLORATION: Pure random action
       selectedAction = availableActions[Math.floor(Math.random() * availableActions.length)];
       this.stats.exploration = this.epsilon;
     } else {
-      // Exploit: best Q-value
-      let bestQ = -Infinity;
-      selectedAction = availableActions[0];
+      // EXPLOITATION: Use Q-values, with intelligent initialization
+      const hasQValues = this.qTable.has(stateKey);
       
-      for (const action of availableActions) {
-        const q = this.getQ(stateKey, action);
-        if (q > bestQ) {
-          bestQ = q;
-          selectedAction = action;
+      // Early game heuristic when no Q-values exist yet
+      if (!hasQValues && this.stats.episodesCompleted < 20) {
+        // Use simple heuristics for better-than-random baseline
+        if (features.hasLegal && features.bestLegalRaw > 20) {
+          selectedAction = 'play-legal';
+        } else if (features.bestSafeRaw >= 20 && features.auditTrack < 4) {
+          selectedAction = 'play-safe';
+        } else if (features.hasValidAuditHand && features.maxHangingValue > 10) {
+          selectedAction = 'audit-highest';
+        } else {
+          // Fallback to random
+          selectedAction = availableActions[Math.floor(Math.random() * availableActions.length)];
+        }
+        
+        // Ensure selected action is available
+        if (!availableActions.includes(selectedAction)) {
+          selectedAction = availableActions[Math.floor(Math.random() * availableActions.length)];
+        }
+      } else {
+        // Standard Q-value selection
+        let bestQ = -Infinity;
+        selectedAction = availableActions[0];
+        
+        for (const action of availableActions) {
+          const q = this.getQ(stateKey, action);
+          if (q > bestQ) {
+            bestQ = q;
+            selectedAction = action;
+          }
+        }
+        
+        // Tie-breaking: if all Q-values are equal (likely 0), add randomness
+        if (bestQ === 0) {
+          const equalActions = availableActions.filter(a => this.getQ(stateKey, a) === bestQ);
+          if (equalActions.length > 1 && Math.random() < 0.1) {
+            // 10% chance to pick randomly among equal values
+            selectedAction = equalActions[Math.floor(Math.random() * equalActions.length)];
+          }
         }
       }
     }
@@ -977,21 +1019,214 @@ export class LearningAgent {
     this.saveToStorage();
   }
 
-  // Decay exploration over time - WARZONE uses aggressive exploration
+  // PERFORMANCE-BASED exploration AND learning rate decay
   public updateExploration(episodesCompleted: number) {
     const isWarzone = this.name.includes('Warzone');
     
-    if (isWarzone) {
-      // Warzone: Start high (0.5), decay slower, keep higher minimum (0.15)
-      // This ensures continuous discovery of new strategies
-      this.epsilon = Math.max(0.15, 0.5 * Math.pow(0.998, episodesCompleted));
+    // Calculate performance metrics
+    const winRate = this.stats.winRate;
+    const avgScore = this.stats.avgScore;
+    
+    // Performance factor: 0.5 (struggling) to 2.0 (dominating)
+    let performanceFactor = 1.0;
+    
+    if (episodesCompleted >= 10) { // Need some games to judge
+      // Win rate influence (0-1 scale)
+      const winFactor = winRate * 2; // 0% wins = 0, 50% wins = 1, 100% wins = 2
+      
+      // Score influence (normalized around 250 as average)
+      const scoreFactor = avgScore / 250; // <250 = <1, >250 = >1
+      
+      // Combine factors
+      performanceFactor = (winFactor * 0.7 + scoreFactor * 0.3);
+      
+      // Clamp between 0.5 (slow decay) and 2.0 (fast decay)
+      performanceFactor = Math.max(0.5, Math.min(2.0, performanceFactor));
+    }
+    
+    // === BREAKTHROUGH MODE HANDLING ===
+    if (this.stats.breakthroughActive > 0) {
+      // We're in breakthrough mode - decay FROM the breakthrough spike
+      const decayProgress = 1 - (this.stats.breakthroughActive / 50); // 50 episodes to decay back
+      const normalEpsilon = this.calculateNormalEpsilon(episodesCompleted, isWarzone, performanceFactor);
+      
+      // Interpolate between breakthrough epsilon and normal epsilon
+      this.epsilon = this.stats.breakthroughEpsilon * (1 - decayProgress) + normalEpsilon * decayProgress;
+      
+      // Also boost alpha during breakthrough
+      const normalAlpha = this.calculateNormalAlpha(episodesCompleted, isWarzone, performanceFactor);
+      this.alpha = Math.min(0.3, normalAlpha * (1 + (1 - decayProgress))); // Up to 2x during breakthrough
+      
+      // Decrement breakthrough counter
+      this.stats.breakthroughActive--;
+      
+      if (this.stats.breakthroughActive === 0) {
+        console.log(`${this.name}: Breakthrough mode ended, returning to normal decay`);
+      }
     } else {
-      // Legacy mode
-      this.epsilon = Math.max(0.05, 0.3 * Math.pow(0.995, episodesCompleted));
+      // Normal decay when not in breakthrough
+      this.epsilon = this.calculateNormalEpsilon(episodesCompleted, isWarzone, performanceFactor);
+      this.alpha = this.calculateNormalAlpha(episodesCompleted, isWarzone, performanceFactor);
+    }
+    
+    // === LOGGING ===
+    if (episodesCompleted % 100 === 0 && episodesCompleted > 0) {
+      console.log(`${this.name}: Episode ${episodesCompleted}, WinRate: ${(winRate * 100).toFixed(1)}%, ` +
+                  `Explore: ${(this.epsilon * 100).toFixed(1)}%, Learn: ${(this.alpha * 100).toFixed(1)}%, ` +
+                  `PerfFactor: ${performanceFactor.toFixed(2)}`);
     }
     
     this.stats.exploration = this.epsilon;
     this.stats.episodesCompleted = episodesCompleted;
+    
+    // === BREAKTHROUGH DETECTION ===
+    this.detectPlateau(episodesCompleted);
+  }
+  
+  private calculateNormalEpsilon(episodesCompleted: number, isWarzone: boolean, performanceFactor: number): number {
+    const baseExplorationDecay = isWarzone ? 0.997 : 0.995;
+    const adjustedExplorationDecay = Math.pow(baseExplorationDecay, performanceFactor);
+    
+    const startEpsilon = isWarzone ? 0.95 : 0.8;
+    const minEpsilon = isWarzone ? 0.10 : 0.05;
+    
+    return Math.max(
+      minEpsilon,
+      startEpsilon * Math.pow(adjustedExplorationDecay, episodesCompleted)
+    );
+  }
+  
+  private calculateNormalAlpha(episodesCompleted: number, isWarzone: boolean, performanceFactor: number): number {
+    const baseLearningDecay = 0.999;
+    const adjustedLearningDecay = Math.pow(baseLearningDecay, performanceFactor * 0.7);
+    
+    const startAlpha = isWarzone ? 0.25 : 0.20;
+    const minAlpha = 0.05;
+    
+    const alphaPhaseFactor = Math.min(episodesCompleted / 500, 1.0);
+    
+    return Math.max(
+      minAlpha,
+      startAlpha * Math.pow(adjustedLearningDecay, episodesCompleted * alphaPhaseFactor)
+    );
+  }
+  
+  // STRATEGY 1: BREAKTHROUGH MODE - Escape local minima
+  private detectPlateau(episodesCompleted: number) {
+    if (episodesCompleted < 50) return; // Need baseline performance
+    
+    // Check if win rate improved
+    const currentWinRate = this.stats.winRate;
+    const improved = currentWinRate > this.stats.bestWinRate * 1.02; // 2% improvement threshold
+    
+    if (improved) {
+      this.stats.bestWinRate = currentWinRate;
+      this.stats.lastImprovement = episodesCompleted;
+      this.stats.plateauLength = 0;
+    } else {
+      this.stats.plateauLength = episodesCompleted - this.stats.lastImprovement;
+    }
+    
+    // BREAKTHROUGH TRIGGER: No improvement for 100+ episodes
+    const PLATEAU_THRESHOLD = 100;
+    const MIN_EPISODES_BETWEEN_BREAKTHROUGHS = 50;
+    
+    if (this.stats.plateauLength >= PLATEAU_THRESHOLD && 
+        episodesCompleted - this.stats.breakthroughCount * MIN_EPISODES_BETWEEN_BREAKTHROUGHS > 
+        MIN_EPISODES_BETWEEN_BREAKTHROUGHS) {
+      
+      this.triggerBreakthrough();
+    }
+  }
+  
+  private triggerBreakthrough() {
+    console.log(`🚀 BREAKTHROUGH MODE ACTIVATED for ${this.name}!`);
+    console.log(`   Plateau detected: ${this.stats.plateauLength} episodes without improvement`);
+    console.log(`   Current win rate: ${(this.stats.winRate * 100).toFixed(1)}%`);
+    
+    // AGGRESSIVE EXPLORATION SPIKE
+    const oldEpsilon = this.epsilon;
+    const breakthroughTarget = Math.min(0.8, Math.max(this.epsilon * 2.5, 0.1)); // 2.5x but at least 10%
+    
+    // Store breakthrough state
+    this.stats.breakthroughActive = 70; // Decay over 70 episodes
+    this.stats.breakthroughEpsilon = breakthroughTarget;
+    
+    // Immediately apply breakthrough
+    this.epsilon = breakthroughTarget;
+    
+    // LEARNING RATE BOOST to quickly capture new discoveries
+    const oldAlpha = this.alpha;
+    this.alpha = Math.min(0.25, this.alpha * 1.5); // 1.5x learning rate, cap at 25%
+    
+    console.log(`   Exploration: ${(oldEpsilon * 100).toFixed(1)}% → ${(this.epsilon * 100).toFixed(1)}%`);
+    console.log(`   Learning: ${(oldAlpha * 100).toFixed(1)}% → ${(this.alpha * 100).toFixed(1)}%`);
+    console.log(`   Breakthrough will decay over next 50 episodes`);
+    
+    // Mark breakthrough
+    this.stats.breakthroughCount++;
+    this.stats.lastImprovement = this.stats.episodesCompleted; // Reset plateau counter
+  }
+  
+  // Reward the strongest performer with reduced exploration
+  public rewardDominance() {
+    if (this.epsilon > 0.15) {
+      this.epsilon *= 0.9;
+      console.log(`🏆 ${this.name} rewarded: exploration reduced to ${(this.epsilon * 100).toFixed(1)}%`);
+    }
+  }
+  
+  // STRATEGY 2: EXTINCTION EVENT - Kill and resurrect the weakest
+  public triggerExtinction(isWeakest: boolean, strongestWinRate: number) {
+    if (!isWeakest) return;
+    
+    console.log(`💀 EXTINCTION EVENT for ${this.name}!`);
+    console.log(`   Win rate: ${(this.stats.winRate * 100).toFixed(1)}% vs leader: ${(strongestWinRate * 100).toFixed(1)}%`);
+    
+    // PARTIAL MEMORY WIPE - Keep 10% of best strategies
+    const topStates = this.getTopValueStates(Math.floor(this.qTable.size * 0.1));
+    const preserved = new Map<string, Map<Action, number>>();
+    
+    for (const state of topStates) {
+      if (this.qTable.has(state)) {
+        preserved.set(state, new Map(this.qTable.get(state)!));
+      }
+    }
+    
+    // Clear and restore
+    this.qTable.clear();
+    this.stateAccessOrder.clear();
+    this.accessCounter = 0;
+    
+    for (const [state, actions] of preserved) {
+      this.qTable.set(state, actions);
+    }
+    
+    console.log(`   Preserved ${preserved.size} high-value states from ${this.qTable.size}`);
+    
+    // RESET TO AGGRESSIVE LEARNING
+    this.epsilon = 0.7; // High exploration to rediscover
+    this.alpha = 0.3;   // Fast learning from stronger opponents
+    
+    // Reset plateau and breakthrough tracking
+    this.stats.plateauLength = 0;
+    this.stats.lastImprovement = this.stats.episodesCompleted;
+    this.stats.breakthroughActive = 0; // Clear any active breakthrough
+    this.stats.breakthroughEpsilon = 0;
+    
+    console.log(`   Reborn with 70% exploration, 30% learning rate`);
+  }
+  
+  private getTopValueStates(count: number): string[] {
+    const stateValues: Array<[string, number]> = [];
+    
+    for (const [state, actions] of this.qTable.entries()) {
+      const maxQ = Math.max(...Array.from(actions.values()));
+      stateValues.push([state, maxQ]);
+    }
+    
+    stateValues.sort((a, b) => b[1] - a[1]);
+    return stateValues.slice(0, count).map(([state]) => state);
   }
   
   // Track which features correlate with high rewards
@@ -1108,9 +1343,54 @@ export class LearningAgent {
       const data = this.exportKnowledge();
       // Save to agent-specific key
       const storageKey = `rheinhessen-ai-learning-${this.name}`;
-      localStorage.setItem(storageKey, JSON.stringify(data));
-    } catch (e) {
-      console.error('Failed to save learning data:', e);
+      
+      // Check size before saving
+      const dataStr = JSON.stringify(data);
+      const sizeMB = dataStr.length / (1024 * 1024);
+      
+      if (sizeMB > 2) {
+        console.warn(`${this.name} data is ${sizeMB.toFixed(2)}MB - consider reducing Q-table size`);
+        // If too large, only keep most valuable states
+        if (sizeMB > 3 && this.qTable.size > 10000) {
+          console.log('Auto-pruning Q-table to save space...');
+          const topStates = this.getTopValueStates(10000);
+          const newQTable = new Map<string, Map<Action, number>>();
+          for (const state of topStates) {
+            if (this.qTable.has(state)) {
+              newQTable.set(state, this.qTable.get(state)!);
+            }
+          }
+          this.qTable = newQTable;
+          // Try again with smaller table
+          const smallerData = this.exportKnowledge();
+          localStorage.setItem(storageKey, JSON.stringify(smallerData));
+          console.log(`Pruned to ${this.qTable.size} states`);
+          return;
+        }
+      }
+      
+      localStorage.setItem(storageKey, dataStr);
+    } catch (e: any) {
+      if (e.name === 'QuotaExceededError') {
+        console.error('Storage quota exceeded! Clearing old data...');
+        // Try to clear old/unused AI data
+        for (let key in localStorage) {
+          if (key.startsWith('rheinhessen-ai-learning-') && !key.includes(this.name)) {
+            localStorage.removeItem(key);
+            console.log(`Cleared old data: ${key}`);
+          }
+        }
+        // Try once more
+        try {
+          const data = this.exportKnowledge();
+          const storageKey = `rheinhessen-ai-learning-${this.name}`;
+          localStorage.setItem(storageKey, JSON.stringify(data));
+        } catch (e2) {
+          console.error('Still failed after cleanup:', e2);
+        }
+      } else {
+        console.error('Failed to save learning data:', e);
+      }
     }
   }
   
@@ -1205,19 +1485,35 @@ export class LearningAgent {
   // Reset learning
   public reset() {
     this.qTable.clear();
-    this.epsilon = 0.3;
+    
+    // Reset to appropriate starting values based on type
+    const isWarzone = this.name.includes('Warzone');
+    this.epsilon = isWarzone ? 0.95 : 0.8;  // Start high for true random discovery
+    this.alpha = isWarzone ? 0.25 : 0.20;   // Start with fast learning
+    
     this.turnHistory = [];
     this.countedGames.clear();
     this.currentGameId = null;
+    this.stateAccessOrder.clear();
+    this.accessCounter = 0;
+    
     this.stats = {
       gamesPlayed: 0,
       gamesWon: 0,
       totalScore: 0,
       avgScore: 0,
       winRate: 0,
-      exploration: 0.3,
-      episodesCompleted: 0
+      exploration: this.epsilon,
+      episodesCompleted: 0,
+      // Reset breakthrough tracking
+      lastImprovement: 0,
+      plateauLength: 0,
+      bestWinRate: 0,
+      breakthroughCount: 0,
+      breakthroughActive: 0,
+      breakthroughEpsilon: 0
     };
+    
     // Remove agent-specific storage
     const storageKey = `rheinhessen-ai-learning-${this.name}`;
     localStorage.removeItem(storageKey);
@@ -1337,7 +1633,44 @@ export class LearningAgent {
       insights.push(`💰 Avg score: ${Math.round(this.stats.avgScore)} points`);
     }
     
-    insights.push(`🎲 Exploration: ${Math.round(this.epsilon * 100)}% random actions`);
+    // Show exploration decay progress with phase indicator
+    const explorationPct = Math.round(this.epsilon * 100);
+    const learningPct = Math.round(this.alpha * 100);
+    
+    if (this.stats.episodesCompleted === 0) {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (UNTRAINED)`);
+    } else if (this.stats.episodesCompleted < 10) {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (DISCOVERY)`);
+    } else if (this.stats.episodesCompleted < 50) {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (Early Learning)`);
+    } else if (this.stats.episodesCompleted < 200) {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (Refining)`);
+    } else if (this.stats.episodesCompleted < 500) {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (Mastering)`);
+    } else {
+      insights.push(`🎲 Exploration: ${explorationPct}% | Learning: ${learningPct}% (Expert)`);
+    }
+    
+    // Show performance-based decay if applicable
+    if (this.stats.episodesCompleted >= 10 && this.stats.winRate > 0) {
+      const perfIndicator = this.stats.winRate > 0.3 ? '🔥' : 
+                           this.stats.winRate > 0.2 ? '📊' : '📈';
+      insights.push(`${perfIndicator} Performance-based dual decay active`);
+    }
+    
+    // Show breakthrough status
+    if (this.stats.breakthroughActive > 0) {
+      insights.push(`🚀 BREAKTHROUGH MODE ACTIVE! (${this.stats.breakthroughActive} episodes remaining)`);
+    } else if (this.stats.plateauLength > 50) {
+      insights.push(`⚠️ PLATEAU: ${this.stats.plateauLength} episodes without improvement`);
+      if (this.stats.plateauLength > 80) {
+        insights.push(`🚀 Breakthrough imminent (triggers at 100)`);
+      }
+    }
+    if (this.stats.breakthroughCount > 0) {
+      insights.push(`🚀 Total breakthroughs: ${this.stats.breakthroughCount}`);
+    }
+    
     insights.push(`💾 Memory: ${this.qTable.size} states (max ${this.MAX_STATES})`);
     
     return insights;

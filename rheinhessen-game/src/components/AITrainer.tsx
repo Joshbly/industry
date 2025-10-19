@@ -10,27 +10,27 @@ const AGENT_CONFIGS: AgentConfig[] = [
   // WARZONE AGENTS - Pure competition, only winning matters
   {
     name: 'Warzone-1',
-    epsilon: 0.5,       // Very high exploration
-    alpha: 0.25,        // Very fast learning
+    epsilon: 0.95,      // Start nearly pure random (95%)
+    // alpha dynamically managed: starts at 0.25, decays based on performance
     gamma: 0.95         // Balanced horizon
     // No reward weights - uses pure warzone system
   },
   {
     name: 'Warzone-2',
-    epsilon: 0.5,
-    alpha: 0.25,
+    epsilon: 0.95,      // Start nearly pure random
+    // alpha dynamically managed
     gamma: 0.95
   },
   {
     name: 'Warzone-3',
-    epsilon: 0.5,
-    alpha: 0.25,
+    epsilon: 0.95,      // Start nearly pure random
+    // alpha dynamically managed
     gamma: 0.95
   },
   {
     name: 'Warzone-4',
-    epsilon: 0.5,
-    alpha: 0.25,
+    epsilon: 0.95,      // Start nearly pure random
+    // alpha dynamically managed
     gamma: 0.95
   },
   
@@ -90,8 +90,8 @@ export function getLearningAgent(name: string = 'Balanced'): LearningAgent {
         // Create warzone config
         config = {
           name,
-          epsilon: 0.5,
-          alpha: 0.25,
+          epsilon: 0.95,  // Start nearly pure random
+          // alpha dynamically managed (starts at 0.25)
           gamma: 0.95
         };
       } else {
@@ -232,9 +232,9 @@ export function AITrainer() {
       randomizeStart: true  // Always randomize in training
     });
     
-    // Log starting player for debugging position bias
-    if (episodeNumber % 50 === 1) {
-      console.log(`Episode ${episodeNumber}: Starting player is position ${match.turnIdx}`);
+    // Log starting player for debugging position bias (more frequent for first games)
+    if (episodeNumber % 25 === 1 || episodeNumber <= 3) {
+      console.log(`Episode ${episodeNumber}: Starting player is P${match.turnIdx + 1}`);
     }
     
     match = startTurn(match);
@@ -255,13 +255,14 @@ export function AITrainer() {
       shuffledAgents.forEach((agentName, idx) => {
         if (idx < 4) {
           match.players[idx].persona = `Learner-${agentName}` as any;
-          
-          // Log seat assignments periodically
-          if (episodeNumber % 50 === 1 && idx === 0) {
-            console.log(`Episode ${episodeNumber} seat assignments: ${shuffledAgents.slice(0, 4).join(', ')}`);
-          }
         }
       });
+      
+      // Log seat assignments more frequently to show randomization working
+      if (episodeNumber % 10 === 1 || episodeNumber <= 5) {
+        console.log(`Episode ${episodeNumber} seats: [${shuffledAgents.slice(0, 4).map((name, i) => 
+          `P${i+1}:${name}`).join(', ')}]`);
+      }
     } else {
       // Mix of learners and regular bots - also randomize learner positions
       const learnerPositions = [0, 1];
@@ -419,6 +420,35 @@ export function AITrainer() {
         console.log('Running episode', i + 1);
         await runTrainingEpisode(i + 1);
         setCurrentEpisode(i + 1);
+        
+        // === EXTINCTION EVENT: Every 200 episodes in Warzone mode ===
+        if ((i + 1) % 200 === 0 && isWarzoneMode && agents.length > 1) {
+          const agentStats = agents.map(agent => ({
+            name: agent.name,
+            winRate: agent.stats.winRate,
+            agent
+          }));
+          
+          // Find weakest and strongest
+          agentStats.sort((a, b) => b.winRate - a.winRate);
+          const strongest = agentStats[0];
+          const weakest = agentStats[agentStats.length - 1];
+          
+          // Only trigger if there's significant performance gap
+          if (strongest.winRate - weakest.winRate > 0.15) { // 15% gap
+            console.log(`\n💀💀💀 EXTINCTION EVENT - Episode ${i + 1} 💀💀💀`);
+            console.log(`Strongest: ${strongest.name} (${(strongest.winRate * 100).toFixed(1)}%)`);
+            console.log(`Weakest: ${weakest.name} (${(weakest.winRate * 100).toFixed(1)}%)`);
+            
+            // Trigger extinction for the weakest
+            weakest.agent.triggerExtinction(true, strongest.winRate);
+            
+            // Give a small bonus to the strongest (positive reinforcement)
+            strongest.agent.rewardDominance();
+            
+            console.log(`💀💀💀 EXTINCTION COMPLETE 💀💀💀\n`);
+          }
+        }
         
         // Update UI and save progress periodically
         if (i % 10 === 0) {
@@ -621,6 +651,61 @@ export function AITrainer() {
     setCurrentEpisode(0);
   };
   
+  // Calculate total localStorage usage
+  const getStorageSize = () => {
+    let totalSize = 0;
+    for (let key in localStorage) {
+      if (key.startsWith('rheinhessen-')) {
+        const item = localStorage.getItem(key);
+        if (item) {
+          totalSize += item.length;
+        }
+      }
+    }
+    return (totalSize / (1024 * 1024)).toFixed(2); // MB
+  };
+  
+  // Get detailed storage breakdown
+  const getStorageBreakdown = () => {
+    const breakdown: { key: string; size: number }[] = [];
+    for (let key in localStorage) {
+      if (key.startsWith('rheinhessen-')) {
+        const item = localStorage.getItem(key);
+        if (item) {
+          breakdown.push({
+            key: key.replace('rheinhessen-', ''),
+            size: item.length / 1024 // KB
+          });
+        }
+      }
+    }
+    breakdown.sort((a, b) => b.size - a.size);
+    return breakdown;
+  };
+  
+  // Clear all AI training data from localStorage
+  const clearAllAIData = () => {
+    const keysToRemove: string[] = [];
+    for (let key in localStorage) {
+      if (key.startsWith('rheinhessen-ai-') || key === 'rheinhessen-ai-batches') {
+        keysToRemove.push(key);
+      }
+    }
+    
+    const sizeBefore = getStorageSize();
+    
+    keysToRemove.forEach(key => {
+      localStorage.removeItem(key);
+    });
+    
+    const sizeAfter = getStorageSize();
+    
+    console.log(`Cleared ${keysToRemove.length} AI data keys`);
+    console.log(`Storage reduced from ${sizeBefore}MB to ${sizeAfter}MB`);
+    
+    return keysToRemove.length;
+  };
+  
   return (
     <>
       <button
@@ -768,6 +853,79 @@ export function AITrainer() {
                         </button>
                       </div>
                     )}
+                    
+                    {/* Storage Management */}
+                    <div className="mt-2 p-2 bg-yellow-900/20 rounded space-y-2">
+                      <div className="flex items-center justify-between">
+                        <button
+                          onClick={() => {
+                            const breakdown = getStorageBreakdown();
+                            const details = breakdown.map(item => 
+                              `${item.key}: ${item.size.toFixed(1)}KB`
+                            ).join('\n');
+                            alert(`Storage Breakdown:\n\n${details}\n\nTotal: ${getStorageSize()}MB`);
+                          }}
+                          className="text-xs text-yellow-400 hover:text-yellow-300 cursor-pointer underline"
+                        >
+                          Storage: {getStorageSize()}MB used (click for details)
+                        </button>
+                        <button
+                          onClick={() => {
+                            const sizeBefore = getStorageSize();
+                            const keysCleared = clearAllAIData();
+                            const sizeAfter = getStorageSize();
+                            alert(`Cleared ${keysCleared} AI data keys!\nFreed ${(parseFloat(sizeBefore) - parseFloat(sizeAfter)).toFixed(2)}MB of storage.\n\nYou can now save new batches.`);
+                            // Refresh agents
+                            agents.forEach(agent => agent.reset());
+                            const allInsights: string[] = [];
+                            agents.forEach(agent => {
+                              allInsights.push(`=== ${agent.name} ===`);
+                              allInsights.push(...agent.getInsights());
+                              allInsights.push('');
+                            });
+                            setInsights(allInsights);
+                          }}
+                          className="px-2 py-1 bg-yellow-700 hover:bg-yellow-800 text-white text-xs rounded"
+                        >
+                          🗑️ Clear AI Storage
+                        </button>
+                      </div>
+                      <div className="text-xs text-yellow-500">
+                        If you get "QuotaExceededError", click Clear AI Storage
+                      </div>
+                      
+                      {/* Nuclear option */}
+                      {getStorageSize() !== '0.00' && (
+                        <button
+                          onClick={() => {
+                            if (confirm('⚠️ NUCLEAR OPTION ⚠️\n\nThis will clear ALL Rheinhessen game data including:\n- All AI training data\n- All saved batches\n- All game settings\n\nAre you ABSOLUTELY SURE?')) {
+                              // Clear EVERYTHING related to the game
+                              const keysToRemove: string[] = [];
+                              for (let key in localStorage) {
+                                if (key.startsWith('rheinhessen-')) {
+                                  keysToRemove.push(key);
+                                }
+                              }
+                              
+                              keysToRemove.forEach(key => localStorage.removeItem(key));
+                              
+                              // Reset everything
+                              setSavedBatches([]);
+                              setUseLearnerInGames(false);
+                              agents.forEach(agent => agent.reset());
+                              
+                              alert(`💥 NUCLEAR CLEAR COMPLETE 💥\n\nCleared ${keysToRemove.length} keys.\nAll game data has been wiped.\n\nYou have a fresh start!`);
+                              
+                              // Refresh the page for a clean slate
+                              window.location.reload();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-red-900 hover:bg-red-800 text-white text-xs rounded flex items-center justify-center gap-1"
+                        >
+                          💥 Nuclear Clear (Wipes Everything)
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

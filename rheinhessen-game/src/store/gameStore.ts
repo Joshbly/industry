@@ -293,7 +293,7 @@ const useGameStore = create<GameStore>((set, get) => ({
     
     const target = match.players[targetId];
     const { leftover } = reorganizeGreedy(target.floor);
-    const fine = rawValue(leftover);
+    const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier
     
     get().addLog(`${currentPlayer.name} audited ${target.name} for ${fine} points`);
     get().events.push({
@@ -320,7 +320,7 @@ const useGameStore = create<GameStore>((set, get) => ({
     
     const target = match.players[targetId];
     const { leftover } = reorganizeGreedy(target.floor);
-    const fine = rawValue(leftover);
+    const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier
     
     // Show the discarded cards in the log
     const cardStr = cards.map(c => {

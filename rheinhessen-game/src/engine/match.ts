@@ -138,7 +138,7 @@ export function applyInternal(
   
   // Reorganize target's floor
   const { kept, leftover } = reorganizeGreedy(target.floor);
-  const fine = rawValue(leftover);
+  const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
   
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);
@@ -211,7 +211,7 @@ export function applyInternalWithCards(
   
   // Reorganize target's floor
   const { kept, leftover } = reorganizeGreedy(target.floor);
-  const fine = rawValue(leftover);
+  const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
   
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);

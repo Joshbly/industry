@@ -129,12 +129,18 @@ export function AITrainer() {
     setInsights(allInsights);
   }, [currentEpisode, selectedAgents]);
   
-  const runTrainingEpisode = async () => {
+  const runTrainingEpisode = async (episodeNumber: number = 0) => {
     // Import all required functions at the top
     const { createMatch, startTurn, applyProduction, applyInternalWithCards, applyInternal, advanceTurn, endCheck } = 
       await import('../engine/match');
     const { bestLegalGreedy, getHandType } = await import('../engine/evaluation');
     const { decideAI } = await import('../ai/personas');
+    
+    // Create a unique game ID for this episode
+    const gameId = `episode-${episodeNumber}-${Date.now()}`;
+    
+    // Set game ID for all agents to track this game properly
+    agents.forEach(agent => agent.setGameId(gameId));
     
     let match = createMatch(Math.random().toString());
     match = startTurn(match);
@@ -267,9 +273,9 @@ export function AITrainer() {
       }
     }
     
-    // Update exploration rate for all agents
+    // Update exploration rate and episode count for all agents
     agents.forEach(agent => {
-      agent.updateExploration(agent.stats.episodesCompleted + 1);
+      agent.updateExploration(episodeNumber);
     });
   };
   
@@ -287,7 +293,7 @@ export function AITrainer() {
         }
         
         console.log('Running episode', i + 1);
-        await runTrainingEpisode();
+        await runTrainingEpisode(i + 1);
         setCurrentEpisode(i + 1);
         
         // Update UI periodically
@@ -878,12 +884,13 @@ export function AITrainer() {
               {/* Statistics */}
               <div className="bg-gray-900 rounded p-4">
                 <h3 className="text-white font-semibold mb-3">Learning Statistics</h3>
+                <div className="text-xs text-gray-400 mb-2">Episode {currentEpisode} of {episodesTarget}</div>
                 {agents.map(agent => (
                   <div key={agent.name} className="mb-3">
                     <h4 className="text-purple-400 font-medium mb-2">{agent.name}</h4>
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>
-                        <span className="text-gray-400">Games:</span>
+                        <span className="text-gray-400">Participated:</span>
                         <span className="text-white ml-2">{agent.stats.gamesPlayed}</span>
                       </div>
                       <div>
@@ -929,24 +936,34 @@ export function AITrainer() {
               
               {/* Reward Configuration */}
               <div className="bg-gray-900 rounded p-4">
-                <h3 className="text-white font-semibold mb-3">Optimization Goals</h3>
+                <h3 className="text-white font-semibold mb-3">🔥 SAVAGE WILDMAN MODE 🔥</h3>
                 <div className="text-sm text-gray-300 space-y-1">
-                  <div>📈 <span className="text-green-400">+1 per point</span> - Maximize score</div>
-                  <div>🏆 <span className="text-green-400">+100 for wins</span> - Win games</div>
-                  <div>🛡️ <span className="text-green-400">+10 avoiding external</span> - Risk management</div>
-                  <div>🎯 <span className="text-green-400">+20 successful audit</span> - Strategic audits</div>
-                  <div>⚠️ <span className="text-red-400">-30 triggering external</span> - Avoid penalties</div>
-                  <div>📉 <span className="text-red-400">-5 per tick added</span> - Control audit track</div>
+                  <div>💰 <span className="text-green-400 font-bold">+1 per point</span> - POINTS = POWER!</div>
+                  <div>🏆 <span className="text-yellow-400 font-bold">+300 for wins</span> - WIN AT ALL COSTS!</div>
+                  <div>💎 <span className="text-purple-400 font-bold">+25 MEGA HANDS</span> - Full house/Quads/Straight flush!</div>
+                  <div>⚔️ <span className="text-orange-400">+15 aggressive play</span> - Big illegal scores!</div>
+                  <div>🎲 <span className="text-blue-400">+8 strategic pass</span> - Build that monster hand!</div>
+                  <div>🔨 <span className="text-cyan-400">+12 hand building</span> - Pass then SMASH!</div>
+                  <div>👑 <span className="text-blue-400">+0.5 per lead point</span> - Dominate!</div>
+                  <div>🎯 <span className="text-gray-300">+30 audit</span> - Tactical strikes</div>
+                  <div>⚡ <span className="text-green-400">NO FEAR</span> - No losing punishment!</div>
+                  <div>⚠️ <span className="text-red-400">-50 external</span> - Only real penalty</div>
                 </div>
               </div>
               
               {/* Instructions */}
               <div className="text-xs text-gray-400 border-t border-gray-700 pt-3">
-                <p>The AI uses Q-learning to discover optimal strategies through self-play.</p>
-                <p>It learns from rewards/penalties and gradually reduces exploration.</p>
-                <p>Training data is saved locally and persists between sessions.</p>
+                <p className="text-orange-400 font-bold mb-1">🔥 SAVAGE WILDMAN PHILOSOPHY:</p>
+                <p>• Score aggressively - Every point is +1 reward!</p>
+                <p>• Build MEGA hands - Pass with trash, build monsters!</p>
+                <p>• Take risks - No punishment for losing!</p>
+                <p>• Maintain dominance - Lead bonus rewards staying ahead!</p>
+                <p>• Strategic audits - Not constant, but devastating!</p>
                 <p className="mt-2 text-yellow-400">
-                  After training, play against "Learner Bot" to test the AI!
+                  💪 Long-term thinking (γ=0.97) + Fast learning (α=0.15) = UNSTOPPABLE
+                </p>
+                <p className="mt-1 text-red-400">
+                  ⚡ After training, unleash the beast against human players!
                 </p>
               </div>
             </div>

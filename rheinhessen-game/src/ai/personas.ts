@@ -300,5 +300,5 @@ function findBestAuditTarget(state: MatchState, playerId: number): number | null
 
 function estimateFine(floor: Card[]): number {
   const { leftover } = reorganizeGreedy(floor);
-  return rawValue(leftover);
+  return Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
 }

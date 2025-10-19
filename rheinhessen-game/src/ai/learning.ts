@@ -1,7 +1,8 @@
-import type { MatchState } from '../engine/types';
+import type { MatchState, Card } from '../engine/types';
 import { bestLegalGreedy, bestSafeIllegalGreedy, getHandType } from '../engine/evaluation';
 import { calculateTaxedValue } from '../engine/scoring';
 import { rawValue } from '../engine/deck';
+import { reorganizeGreedy } from '../engine/audits';
 import type { AIDecision } from './personas';
 
 // State features for Q-learning - EXPANDED for granular decision-making
@@ -73,6 +74,18 @@ interface StateFeatures {
   totalTableCrime: number;    // Sum of all floor crimes
   externalRisk: number;       // 0-1 probability estimate
   
+  // Hanging value - Audit profit potential (10 features)
+  hasValidAuditHand: boolean; // Can I audit someone now?
+  myAuditHandValue: number;   // Taxed value of my best audit hand
+  myVulnerability: number;    // How much could I lose if audited
+  opp1HangingValue: number;   // Net profit if I audit opponent 1
+  opp2HangingValue: number;   // Net profit if I audit opponent 2  
+  opp3HangingValue: number;   // Net profit if I audit opponent 3
+  bestAuditTarget: number;    // Player ID with highest hanging value
+  maxHangingValue: number;    // Maximum potential audit profit
+  totalHangingValue: number;  // Sum of all positive hanging values
+  auditProfitRatio: number;   // Max hanging value / my audit hand cost
+  
   // Game phase (6 features)
   turnNumber: number;
   deckRemaining: number;
@@ -143,35 +156,46 @@ export class LearningAgent {
   
   // Training stats
   public stats = {
-    gamesPlayed: 0,
-    gamesWon: 0,
-    totalScore: 0,
-    avgScore: 0,
-    winRate: 0,
-    exploration: 0.3,
-    episodesCompleted: 0
+    gamesPlayed: 0,        // Total game participations (episodes * players using this agent)
+    gamesWon: 0,           // Games where this agent won
+    totalScore: 0,         // Cumulative score across all games
+    avgScore: 0,           // Average score per game
+    winRate: 0,            // Win percentage
+    exploration: 0.3,      // Current exploration rate (epsilon)
+    episodesCompleted: 0   // Training episodes/matches completed
   };
+  
+  // Track which games we've already counted to avoid double-counting
+  private countedGames = new Set<string>();
+  private currentGameId: string | null = null;
 
-  // Reward weights (can be tuned)
+  // Reward weights - SAVAGE WILDMAN MODE
   private rewards = {
-    pointGain: 1.0,        // Per point scored
-    winGame: 100,          // Win bonus
-    loseGame: -50,         // Loss penalty
-    avoidExternal: 10,     // Avoiding external when track high
-    causeExternal: -30,    // Triggering external
-    successfulAudit: 20,   // Audit with good return
-    position2nd: 20,       // Finish 2nd
-    position3rd: -10,      // Finish 3rd
-    position4th: -30,      // Finish last
-    spike: -5,             // Adding tick to audit track
-    cleanProduction: 5    // Legal production bonus
+    pointGain: 1.0,        // Every point MATTERS - scoring is the path to victory!
+    winGame: 300,          // Big win bonus (= 300 points worth)
+    loseGame: 0,           // No punishment for losing, just no win bonus
+    avoidExternal: 5,      // Small bonus for dodging external
+    causeExternal: -50,    // BIG penalty - this actually hurts you
+    successfulAudit: 30,   // Good tactical move (= 30 points worth)
+    position2nd: 50,       // Good effort bonus
+    position3rd: 10,       // Participation trophy
+    position4th: 0,        // No punishment - removes fear!
+    spike: -2,             // Minor penalty for audit track ticks
+    cleanProduction: 3,    // Small bonus for legal plays
+    blockLeaderAudit: 50,  // Strategic bonus for targeting leader
+    preventWin: 100,       // Important defensive play
+    aggressiveBonus: 15,   // Reward for high-value illegal plays
+    leadMaintenance: 0.5,  // Bonus per point ahead of 2nd place
+    strategicPass: 8,      // Reward for passing with weak hand to build better
+    megaHandBonus: 25,     // MEGA BONUS for full house, quads, straight flush!
+    handBuilding: 12       // Reward for improving hand after passing
   };
 
   constructor(config: AgentConfig = {}) {
     // Apply configuration
     this.epsilon = config.epsilon ?? 0.3;
-    this.alpha = config.alpha ?? 0.1;
-    this.gamma = config.gamma ?? 0.95;
+    this.alpha = config.alpha ?? 0.15;  // Faster learning for aggressive play
+    this.gamma = config.gamma ?? 0.97;   // Strong long-term thinking
     this.name = config.name ?? 'Learner';
     
     // Apply reward weight overrides
@@ -313,6 +337,65 @@ export class LearningAgent {
     const highCardsRemaining = Math.max(0, 16 - highCardsPlayed); // 4 each of A,K,Q,J
     const lowCardsRemaining = Math.max(0, 16 - cardsPlayed / 3); // Rough estimate
     
+    // Hanging value calculations - Audit profit potential
+    const findBestAuditHand = (hand: Card[]): { cards: Card[]; raw: number } | null => {
+      const legalHand = bestLegalGreedy(hand);
+      if (!legalHand) return null;
+      
+      const handType = getHandType(legalHand.cards);
+      const validTypes = ['trips', 'straight', 'flush', 'full-house', 'quads', 'straight-flush'];
+      if (!validTypes.includes(handType)) return null;
+      
+      if (calculateTaxedValue(legalHand.raw) < 12) return null;
+      
+      return legalHand;
+    };
+    
+    const calculateHangingValue = (targetFloor: Card[], auditHandCost: number): number => {
+      const { leftover } = reorganizeGreedy(targetFloor);
+      const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
+      return fine - auditHandCost; // Net profit from audit
+    };
+    
+    const myBestAuditHand = findBestAuditHand(player.hand);
+    const hasValidAuditHand = myBestAuditHand !== null;
+    const myAuditHandValue = myBestAuditHand ? calculateTaxedValue(myBestAuditHand.raw) : 0;
+    const auditHandCost = myBestAuditHand ? myBestAuditHand.raw * 0.7 : 0;
+    
+    // Calculate my vulnerability (how much I could lose if audited)
+    const { leftover: myLeftover } = reorganizeGreedy(player.floor);
+    const myVulnerability = Math.round(rawValue(myLeftover) * 1.5); // 1.5x multiplier
+    
+    // Calculate hanging value for each opponent
+    const opp1HangingValue = hasValidAuditHand && opp1 
+      ? calculateHangingValue(opp1.floor, auditHandCost) 
+      : 0;
+    const opp2HangingValue = hasValidAuditHand && opp2 
+      ? calculateHangingValue(opp2.floor, auditHandCost) 
+      : 0;
+    const opp3HangingValue = hasValidAuditHand && opp3 
+      ? calculateHangingValue(opp3.floor, auditHandCost) 
+      : 0;
+    
+    // Find best audit target
+    const hangingValues = [
+      { id: opp1?.id || -1, value: opp1HangingValue },
+      { id: opp2?.id || -1, value: opp2HangingValue },
+      { id: opp3?.id || -1, value: opp3HangingValue }
+    ].filter(hv => hv.id >= 0);
+    
+    const bestAudit = hangingValues.reduce((best, current) => 
+      current.value > best.value ? current : best,
+      { id: -1, value: -999 }
+    );
+    
+    const bestAuditTarget = bestAudit.value > -10 ? bestAudit.id : -1;
+    const maxHangingValue = Math.max(0, opp1HangingValue, opp2HangingValue, opp3HangingValue);
+    const totalHangingValue = Math.max(0, opp1HangingValue) + 
+                             Math.max(0, opp2HangingValue) + 
+                             Math.max(0, opp3HangingValue);
+    const auditProfitRatio = auditHandCost > 0 ? maxHangingValue / auditHandCost : 0;
+    
     return {
       // Hand composition (11 features)
       handSize: player.hand.length,
@@ -381,6 +464,18 @@ export class LearningAgent {
       totalTableCrime,
       externalRisk,
       
+      // Hanging value - Audit profit potential (10 features)
+      hasValidAuditHand,
+      myAuditHandValue,
+      myVulnerability,
+      opp1HangingValue,
+      opp2HangingValue,
+      opp3HangingValue,
+      bestAuditTarget,
+      maxHangingValue,
+      totalHangingValue,
+      auditProfitRatio,
+      
       // Game phase (6 features)
       turnNumber,
       deckRemaining,
@@ -409,7 +504,7 @@ export class LearningAgent {
     };
   }
 
-  // Discretize features for Q-table key - using top 30 most important features
+  // Discretize features for Q-table key - using top 35 most important features (including hanging values)
   private stateToKey(features: StateFeatures): string {
     const d = (value: number, buckets: number[]): number => {
       for (let i = 0; i < buckets.length; i++) {
@@ -421,7 +516,7 @@ export class LearningAgent {
     const b = (value: boolean): number => value ? 1 : 0;
     
     // Select the most impactful features for state representation
-    // We can't use all 75 features or the state space would be too large
+    // We can't use all 85+ features or the state space would be too large
     return [
       // Core hand features (5)
       d(features.handSize, [5, 7, 10, 15]),
@@ -447,6 +542,13 @@ export class LearningAgent {
       b(features.wouldTriggerExternal),
       d(features.externalRisk * 10, [2, 5, 8]),
       
+      // Hanging value features (5) - NEW!
+      b(features.hasValidAuditHand),
+      d(features.myVulnerability, [10, 20, 40]),
+      d(features.maxHangingValue, [-10, 0, 10, 20]),
+      d(features.auditProfitRatio * 10, [-5, 0, 5, 10]),
+      features.bestAuditTarget >= 0 ? 1 : 0,
+      
       // Game phase features (3)
       features.gamePhase,
       d(features.estimatedTurnsLeft, [5, 10, 15]),
@@ -468,6 +570,7 @@ export class LearningAgent {
   // Get available actions
   private getAvailableActions(state: MatchState, playerId: number): Action[] {
     const player = state.players[playerId];
+    const opponents = state.players.filter(p => p.id !== playerId);
     const features = this.extractFeatures(state, playerId);
     const actions: Action[] = [];
     
@@ -486,11 +589,22 @@ export class LearningAgent {
       actions.push('play-dump');
     }
     
-    // Audit available with proper hand and target
-    if (features.hasTripsPlus && features.highestCrimeFloor > 15) {
-      // Additional smart checks for audit viability
-      const auditReturn = features.highestCrimeFloor * 0.3 - features.bestLegalTaxed;
-      const worthAudit = auditReturn > 0 || features.canBlockLeader;
+    // Audit available based on hanging value calculation
+    if (features.hasValidAuditHand && features.maxHangingValue > -5) {
+      // Use hanging value to determine if audit is worth it
+      // Positive hanging value = profitable audit
+      // Small negative ok if strategic (blocking leader, etc)
+      
+      // MALICIOUS CHECK: Is someone about to win?
+      const leader = opponents.reduce((best, opp) => 
+        opp.score > best.score ? opp : best, opponents[0]);
+      const leaderNearWin = leader && leader.score >= 250;
+      
+      const worthAudit = features.maxHangingValue > 0 || 
+                        (features.maxHangingValue > -10 && features.canBlockLeader) ||
+                        (features.auditProfitRatio > 0.8 && features.auditTrack >= 3) ||
+                        leaderNearWin; // ALWAYS try to audit if leader near win!
+      
       if (worthAudit) {
         actions.push('audit-highest');
       }
@@ -587,22 +701,29 @@ export class LearningAgent {
         };
       
       case 'audit-highest': {
-        // Find opponent with most crime
-        let targetId = -1;
-        let maxCrime = 0;
-        for (const opponent of state.players) {
-          if (opponent.id === playerId) continue;
-          const crime = rawValue(opponent.floor);
-          if (crime > maxCrime) {
-            maxCrime = crime;
-            targetId = opponent.id;
+        // Use hanging value to find best audit target
+        const features = this.extractFeatures(state, playerId);
+        const targetId = features.bestAuditTarget;
+        
+        // Fallback to highest crime if no best target identified
+        if (targetId < 0) {
+          let fallbackId = -1;
+          let maxCrime = 0;
+          for (const opponent of state.players) {
+            if (opponent.id === playerId) continue;
+            const crime = rawValue(opponent.floor);
+            if (crime > maxCrime) {
+              maxCrime = crime;
+              fallbackId = opponent.id;
+            }
           }
+          if (fallbackId >= 0) {
+            return { doInternal: true, targetId: fallbackId, production: { type: 'pass' } };
+          }
+          return { doInternal: false, production: { type: 'pass' } };
         }
         
-        if (targetId >= 0) {
-          return { doInternal: true, targetId, production: { type: 'pass' } };
-        }
-        return { doInternal: false, production: { type: 'pass' } };
+        return { doInternal: true, targetId, production: { type: 'pass' } };
       }
       
       default:
@@ -643,16 +764,90 @@ export class LearningAgent {
       reward += this.rewards.cleanProduction;
     }
     
+    // AGGRESSIVE BONUS: Reward high-value illegal plays
+    if ((action === 'play-safe' || action === 'play-dump') && pointsGained > 15) {
+      reward += this.rewards.aggressiveBonus;
+    }
+    
+    // LEAD MAINTENANCE: Reward for being ahead
+    const scores = newState.players.map(p => p.score).sort((a, b) => b - a);
+    if (newPlayer.score === scores[0] && scores[1] !== undefined) {
+      const leadMargin = newPlayer.score - scores[1];
+      reward += leadMargin * this.rewards.leadMaintenance;
+    }
+    
+    // STRATEGIC PASS: Reward passing with a weak hand (< 3 cards or no pairs)
+    if (action === 'pass') {
+      const hasWeakHand = prevPlayer.hand.length <= 3 || 
+                         !this.extractFeatures(prevState, playerId).hasLegal;
+      if (hasWeakHand) {
+        reward += this.rewards.strategicPass;
+      }
+    }
+    
+    // MEGA HAND BONUS: Reward for playing full house, quads, or straight flush!
+    if (action === 'play-legal' && pointsGained > 0) {
+      const features = this.extractFeatures(prevState, playerId);
+      if (features.hasFullHouse || features.hasFlush || features.hasStraight) {
+        reward += this.rewards.megaHandBonus;
+      }
+    }
+    
+    // HAND BUILDING: Reward if we improved our hand after passing
+    // Check if our last action was a pass and now we're playing
+    if ((action === 'play-legal' || action === 'play-safe' || action === 'play-dump') && 
+        this.turnHistory.length > 0) {
+      const lastPlayerTurn = this.turnHistory
+        .filter(t => t.playerId === playerId)
+        .slice(-1)[0];
+      
+      if (lastPlayerTurn && lastPlayerTurn.action === 'pass' && pointsGained > 20) {
+        // We passed last turn and now played a good hand!
+        reward += this.rewards.handBuilding;
+      }
+    }
+    
     // Successful audit bonus
     if (action === 'audit-highest' && pointsGained > 10) {
       reward += this.rewards.successfulAudit;
+      
+      // MALICIOUS BONUS: Extra reward for auditing the leader
+      const prevLeader = [...prevState.players].sort((a, b) => b.score - a.score)[0];
+      const features = this.extractFeatures(prevState, playerId);
+      if (features.bestAuditTarget === prevLeader.id && prevLeader.id !== playerId) {
+        reward += this.rewards.blockLeaderAudit;
+        
+        // EXTREME BONUS: If leader was close to winning, massive reward
+        if (prevLeader.score >= 250) {
+          reward += this.rewards.preventWin;
+        }
+      }
     }
     
     // Game end rewards
     if (newState.winnerId !== undefined) {
+      // Only count each game once using the gameId
+      const gameKey = this.currentGameId || `game-${Date.now()}`;
+      const shouldCountGame = !this.countedGames.has(gameKey);
+      
+      if (shouldCountGame) {
+        this.countedGames.add(gameKey);
+        
+        // Track game participation  
+        this.stats.gamesPlayed++;
+        this.stats.totalScore += newPlayer.score;
+        
+        if (newState.winnerId === playerId) {
+          this.stats.gamesWon++;
+        }
+        
+        this.stats.avgScore = this.stats.totalScore / this.stats.gamesPlayed;
+        this.stats.winRate = this.stats.gamesWon / this.stats.gamesPlayed;
+      }
+      
+      // Always give rewards for game end, even if we already counted the game
       if (newState.winnerId === playerId) {
         reward += this.rewards.winGame;
-        this.stats.gamesWon++;
       } else {
         const position = [...newState.players]
           .sort((a, b) => b.score - a.score)
@@ -664,11 +859,6 @@ export class LearningAgent {
           case 4: reward += this.rewards.position4th; break;
         }
       }
-      
-      this.stats.gamesPlayed++;
-      this.stats.totalScore += newPlayer.score;
-      this.stats.avgScore = this.stats.totalScore / this.stats.gamesPlayed;
-      this.stats.winRate = this.stats.gamesWon / this.stats.gamesPlayed;
     }
     
     return reward;
@@ -718,6 +908,11 @@ export class LearningAgent {
     this.stats.exploration = this.epsilon;
     this.stats.episodesCompleted = episodesCompleted;
   }
+  
+  // Set the current game ID to track game completions
+  public setGameId(gameId: string) {
+    this.currentGameId = gameId;
+  }
 
   // Save learned Q-table
   private saveToStorage() {
@@ -749,7 +944,8 @@ export class LearningAgent {
         exportDate: new Date().toISOString(),
         featureVersion: 'v2-75features',
         stateCount: this.qTable.size
-      }
+      },
+      countedGames: Array.from(this.countedGames) // Track which games we've counted
     };
   }
 
@@ -792,6 +988,11 @@ export class LearningAgent {
       if (data.turnHistory) {
         this.turnHistory = data.turnHistory;
       }
+      
+      // Restore counted games to avoid double-counting
+      if (data.countedGames) {
+        this.countedGames = new Set(data.countedGames);
+      }
     } catch (e) {
       console.error('Failed to import learning data:', e);
     }
@@ -802,6 +1003,8 @@ export class LearningAgent {
     this.qTable.clear();
     this.epsilon = 0.3;
     this.turnHistory = [];
+    this.countedGames.clear();
+    this.currentGameId = null;
     this.stats = {
       gamesPlayed: 0,
       gamesWon: 0,
@@ -856,8 +1059,8 @@ export class LearningAgent {
   public getInsights(): string[] {
     const insights: string[] = [];
     
-    insights.push(`📊 Processing 75 game features (expanded from 11)`);
-    insights.push(`🧠 State space: ${this.qTable.size} unique states explored`);
+    insights.push(`📊 Processing 85+ features (including hanging values)`);
+    insights.push(`🧠 Q-table: ${this.qTable.size} unique states mapped`);
     
     // Most valuable states
     const stateValues: Array<[string, number]> = [];
@@ -885,16 +1088,18 @@ export class LearningAgent {
     
     const total = preferLegal + preferIllegal + preferAudit;
     if (total > 0) {
-      insights.push(`Prefers: ${Math.round(preferLegal/total*100)}% legal, ${Math.round(preferIllegal/total*100)}% illegal, ${Math.round(preferAudit/total*100)}% audit`);
+      insights.push(`Strategy: ${Math.round(preferLegal/total*100)}% legal, ${Math.round(preferIllegal/total*100)}% illegal, ${Math.round(preferAudit/total*100)}% AUDIT`);
     }
     
-    if (this.stats.gamesPlayed > 10) {
-      insights.push(`Win rate: ${Math.round(this.stats.winRate * 100)}% over ${this.stats.gamesPlayed} games`);
-      insights.push(`Avg score: ${Math.round(this.stats.avgScore)} points`);
+    // Clarify episodes vs games
+    if (this.stats.episodesCompleted > 0) {
+      insights.push(`🎮 Episodes: ${this.stats.episodesCompleted} (${this.stats.gamesPlayed} participations)`);
+      insights.push(`📈 Win rate: ${Math.round(this.stats.winRate * 100)}% (${this.stats.gamesWon}/${this.stats.gamesPlayed})`);
+      insights.push(`💰 Avg score: ${Math.round(this.stats.avgScore)} points`);
     }
     
-    insights.push(`Exploration: ${Math.round(this.epsilon * 100)}% (episode ${this.stats.episodesCompleted})`);
-    insights.push(`Q-table size: ${this.qTable.size} states`);
+    insights.push(`🎲 Exploration: ${Math.round(this.epsilon * 100)}% random actions`);
+    insights.push(`💾 Memory: ${this.qTable.size} states × 5 actions`);
     
     return insights;
   }

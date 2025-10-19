@@ -286,6 +286,13 @@ export function AITrainer() {
       isTrainingRef.current = true;
       setCurrentEpisode(0);
       
+      // Ensure agents have a batch name for display
+      agents.forEach(agent => {
+        if (!agent.batchName) {
+          agent.batchName = currentBatchName || 'Training';
+        }
+      });
+      
       for (let i = 0; i < episodesTarget; i++) {
         if (!isTrainingRef.current) {
           console.log('Training stopped by user');
@@ -369,6 +376,7 @@ export function AITrainer() {
     let agentCount = 0;
     
     agents.forEach(agent => {
+      agent.batchName = name;  // Set batch name on agents
       data[agent.name] = agent.exportKnowledge();
       totalEpisodes += agent.stats.episodesCompleted;
       totalWinRate += agent.stats.winRate;

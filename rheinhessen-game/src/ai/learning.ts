@@ -144,10 +144,16 @@ export class LearningAgent {
   private accessCounter = 0;
   private readonly MAX_STATES = 20000; // Higher cap with better discretization
   
+  // Feature importance tracking
+  private featureRewardCorrelation = new Map<string, number>();
+  private featureUsageCount = new Map<string, number>();
+  private featureDistributions = new Map<string, number[]>();
+  
   private epsilon: number; // Exploration rate
   private alpha: number; // Learning rate  
   private gamma: number; // Discount factor
   public name: string;
+  public batchName: string = '';  // Track which batch this agent came from
   
   // Turn history - CLEARED after each game to prevent memory bloat
   private turnHistory: Array<{
@@ -173,27 +179,37 @@ export class LearningAgent {
   private countedGames = new Set<string>();
   private currentGameId: string | null = null;
 
-  // Reward weights - SAVAGE WILDMAN MODE
+  // Reward weights - THRESHOLD-AWARE SYSTEM
   private rewards = {
-    pointGain: 1.0,        // Every point MATTERS - scoring is the path to victory!
-    winGame: 300,          // Big win bonus (= 300 points worth)
-    loseGame: 0,           // No punishment for losing, just no win bonus
-    avoidExternal: 5,      // Small bonus for dodging external
-    causeExternal: -50,    // BIG penalty - this actually hurts you
-    successfulAudit: 60,   // HUGE audit bonus - audits are PROFITABLE!
-    position2nd: 50,       // Good effort bonus
-    position3rd: 10,       // Participation trophy
-    position4th: 0,        // No punishment - removes fear!
-    spike: -2,             // Minor penalty for audit track ticks
-    cleanProduction: 3,    // Small bonus for legal plays
-    blockLeaderAudit: 80,  // BIG strategic bonus for targeting leader
-    holdingAuditCards: 15, // Reward for keeping cheap trips for audits
-    preventWin: 100,       // Important defensive play
-    aggressiveBonus: 15,   // Reward for high-value illegal plays
-    leadMaintenance: 0.5,  // Bonus per point ahead of 2nd place
-    strategicPass: 8,      // Reward for passing with weak hand to build better
-    megaHandBonus: 25,     // MEGA BONUS for full house, quads, straight flush!
-    handBuilding: 12       // Reward for improving hand after passing
+    // Core scoring
+    pointGain: 1.0,        // Every point matters
+    winGame: 300,          // Ultimate goal
+    loseGame: 0,           // No punishment for trying
+    
+    // Position rewards
+    position2nd: 50,       // Good effort
+    position3rd: 10,       // Participation
+    position4th: 0,        // No punishment
+    leadMaintenance: 0.5,  // Per point ahead
+    
+    // Audit track management
+    causeExternal: -50,    // CATASTROPHIC - avoid at all costs
+    avoidExternal: 10,     // Smart timing bonus
+    spike: -5,             // Penalty for adding ticks (27+ plays)
+    optimalSafe: 20,       // Reward for 20-26 sweet spot plays
+    
+    // Audit rewards
+    successfulAudit: 60,   // High-value tactical move
+    blockLeaderAudit: 80,  // Stop the winner
+    preventWin: 100,       // Critical defensive play
+    holdingAuditCards: 15, // Keep cheap trips ready
+    profitableROI: 30,     // Reward for ROI > 1 audits
+    
+    // Hand management
+    cleanProduction: 5,    // Legal play bonus
+    strategicPass: 8,      // Build better hands
+    megaHandBonus: 25,     // Full house/quads/straight
+    handBuilding: 12       // Improve after passing
   };
 
   constructor(config: AgentConfig = {}) {
@@ -521,55 +537,57 @@ export class LearningAgent {
     
     const b = (value: boolean): number => value ? 1 : 0;
     
-    // SMART: Use ALL 35 critical features with INTELLIGENT bucketing
-    // This gives rich state representation while keeping state count manageable
+    // OPTIMIZED 25-FEATURE SYSTEM - Only what matters for winning
+    // Critical insight: Focus on thresholds that change decisions
+    
+    // Calculate additional critical features
+    const canPlayDangerous = features.bestDumpRaw >= 27;
+    const leaderScore = Math.max(features.opp1Score, features.opp2Score, features.opp3Score);
+    const auditROI = features.hasValidAuditHand && features.myAuditHandValue > 0 ?
+                     features.maxHangingValue / features.myAuditHandValue : 0;
+    
+    // Count players who would trigger external on next illegal
+    let playersNearExternal = 0;
+    if (features.auditTrack >= 4) playersNearExternal++;
+    if (features.auditTrack >= 3 && features.opp1FloorCrime > 27) playersNearExternal++;
+    if (features.auditTrack >= 3 && features.opp2FloorCrime > 27) playersNearExternal++;
+    if (features.auditTrack >= 3 && features.opp3FloorCrime > 27) playersNearExternal++;
+    
     return [
-      // Hand composition (7 features) - Critical for play decisions
-      d(features.handSize, [6, 10, 14]),                    // 4 buckets
-      b(features.hasLegal),                                 // Binary
-      b(features.hasTripsPlus),                            // KEY for audits!
-      d(features.bestLegalRaw, [20, 35, 50]),              // 4 buckets  
-      d(features.bestSafeRaw, [20, 35]),                   // 3 buckets
-      d(features.numPairs, [1, 2]),                        // Pairs for building
-      b(features.hasAce || features.hasKing),              // High cards
+      // POSITION & SCORING (4) - Core win condition
+      d(features.myScore, [100, 200]),                      // Coarser: early/mid/late
+      features.myScoreRank,                                 // Exact 1-4
+      b(features.pointsBehindLeader > 30),                 // Binary: far behind?
+      b(leaderScore >= 250),                               // Binary: someone near win
       
-      // Position tracking (5 features) - Know where we stand
-      features.myScoreRank,                                 // 1-4 exact
-      d(features.myScore, [75, 150, 225]),                 // 4 buckets
-      d(features.pointsBehindLeader, [20, 50]),            // Gap to first
-      d(features.myFloorCrime, [25, 50]),                  // Vulnerability
-      d(features.myProductionCount, [3, 7]),               // Game stage
+      // HAND QUALITY (5) - What can we play?
+      b(features.hasLegal),                                 // Can play legal
+      b(features.bestLegalRaw > 30),                       // Strong legal hand
+      b(features.hasTripsPlus),                            // Can audit
+      b(features.bestSafeRaw >= 20),                       // Good safe illegal
+      b(canPlayDangerous),                                 // NEW: 27+ option
       
-      // Individual opponents (9 features) - CRITICAL for targeting
-      d(features.opp1Score, [100, 200]),                   // Track each
-      d(features.opp1FloorCrime, [20, 45]),                // Individual crime
-      d(features.opp1HandSize, [5, 10]),                   // Their strength
-      d(features.opp2Score, [100, 200]),
-      d(features.opp2FloorCrime, [20, 45]),
-      d(features.opp2HandSize, [5, 10]),
-      d(features.opp3Score, [100, 200]),
-      d(features.opp3FloorCrime, [20, 45]),
-      d(features.opp3HandSize, [5, 10]),
-      
-      // Audit state (7 features) - Full audit awareness
+      // AUDIT DYNAMICS (6) - Risk/reward balance
       Math.min(features.auditTrack, 4),                    // Track position
-      b(features.wouldTriggerExternal),                    // External risk
-      b(features.hasValidAuditHand),                       // Can audit?
-      d(features.maxHangingValue, [-15, 0, 15]),          // Profit level
-      features.bestAuditTarget,                            // WHO to target
-      d(features.myAuditHandValue, [15, 20]),             // Audit cost
-      d(features.myVulnerability, [20, 40]),              // Our risk
+      b(features.wouldTriggerExternal),                    // Would we trigger?
+      b(features.hasValidAuditHand),                       // Can audit now?
+      d(auditROI, [-1, 0, 1]),                            // NEW: Profit ratio
+      Math.min(playersNearExternal, 3),                    // NEW: External risk
+      d(features.myFloorCrime, [30]),                      // Binary: vulnerable?
       
-      // Game phase (3 features) - Strategic timing
+      // OPPONENT TRACKING (7) - Who to target
+      d(features.opp1Score, [100, 200]),                    // Score ranges
+      d(features.opp1FloorCrime, [15, 30, 50]),            // Crime levels
+      d(features.opp2Score, [100, 200]),
+      d(features.opp2FloorCrime, [15, 30, 50]),
+      d(features.opp3Score, [100, 200]),
+      d(features.opp3FloorCrime, [15, 30, 50]),
+      features.bestAuditTarget >= 0 ? features.bestAuditTarget : -1,
+      
+      // GAME CONTEXT (3) - Phase awareness
       features.gamePhase,                                  // 0-3
-      b(features.isEndgame),                              // Final push?
-      d(features.estimatedTurnsLeft, [5, 10]),            // Time left
-      
-      // Strategic indicators (4 features) - High-level strategy  
-      b(features.canBlockLeader),                         // Stop winner?
-      b(features.shouldRace),                             // Need points?
-      b(features.shouldDump),                             // Bad hand?
-      d(features.highestCrimeFloor, [30, 60])             // Max target
+      b(features.isEndgame),                              // Critical phase
+      b(features.canBlockLeader)                          // Can stop winner
     ].join('-');
   }
 
@@ -580,47 +598,53 @@ export class LearningAgent {
     const features = this.extractFeatures(state, playerId);
     const actions: Action[] = [];
     
-    // Legal play available if we have a valid legal hand
-    if (features.hasLegal && features.bestLegalTaxed >= 12) {
+    // Legal play - always prefer if strong enough
+    if (features.hasLegal && features.bestLegalRaw > 15) {
       actions.push('play-legal');
     }
     
-    // Safe play available if below external trigger threshold
-    if (features.bestSafeRaw > 0 && !features.wouldTriggerExternal) {
+    // Safe illegal - the sweet spot (20-26 raw value)
+    if (features.bestSafeRaw >= 20 && features.bestSafeRaw <= 26 && !features.wouldTriggerExternal) {
       actions.push('play-safe');
     }
     
-    // Dump is available if hand size warrants it
-    if (player.hand.length > 0 && (features.shouldDump || player.hand.length > 12)) {
+    // Dangerous play - only when desperate or track is low
+    const canPlayDangerous = features.bestDumpRaw >= 27;
+    const desperate = features.pointsBehindLeader > 50 && features.isEndgame;
+    const safeToSpike = features.auditTrack <= 2;
+    
+    if (canPlayDangerous && (desperate || safeToSpike) && !features.wouldTriggerExternal) {
       actions.push('play-dump');
     }
     
-    // AGGRESSIVE AUDIT - Be much more willing to audit!
+    // AUDIT OPTION - Let AI learn when to audit
     if (features.hasValidAuditHand) {
-      // Check if ANY opponent has crime worth hitting
       const maxCrime = Math.max(features.opp1FloorCrime, features.opp2FloorCrime, features.opp3FloorCrime);
+      const roi = features.myAuditHandValue > 0 ? 
+                  features.maxHangingValue / features.myAuditHandValue : 0;
       
-      // MALICIOUS CHECK: Is someone about to win?
+      // Leader detection
       const leader = opponents.reduce((best, opp) => 
         opp.score > best.score ? opp : best, opponents[0]);
       const leaderNearWin = leader && leader.score >= 250;
       
-      // Much more permissive audit conditions - almost ALWAYS audit if you can!
-      const worthAudit = maxCrime > 10 || // Anyone has decent crime
-                        features.maxHangingValue > -30 || // Even moderate losses OK
-                        features.canBlockLeader || // Can hit the leader
-                        features.auditTrack >= 3 || // Track is getting high
-                        leaderNearWin || // Someone near winning
-                        features.myAuditHandValue <= 18 || // Cheap trips - USE THEM!
-                        Math.random() < 0.3; // 30% random audit aggression
+      // Make audit available in many situations - let Q-learning decide value
+      const auditPossible = maxCrime > 0 ||                     // Anyone has crime
+                           roi > -2 ||                           // Not terrible loss
+                           features.canBlockLeader ||            // Can target leader
+                           leaderNearWin ||                      // Emergency situation
+                           features.auditTrack >= 3;            // High track state
       
-      if (worthAudit) {
+      if (auditPossible) {
         actions.push('audit-highest');
       }
     }
     
-    // Pass is always available but discouraged in certain situations
-    if (!features.shouldRace && !features.isEndgame) {
+    // Pass - strategic when hand is weak or building
+    const weakHand = player.hand.length <= 4 && !features.hasLegal;
+    const buildingHand = features.numPairs === 1 && player.hand.length < 8;
+    
+    if (weakHand || buildingHand || (!features.hasLegal && features.bestSafeRaw < 15)) {
       actions.push('pass');
     }
     
@@ -785,7 +809,7 @@ export class LearningAgent {
       reward += this.rewards.avoidExternal;
     }
     
-    // Spike penalty
+    // Spike penalty for dangerous plays
     if (newState.auditTrack > prevState.auditTrack) {
       reward += this.rewards.spike * (newState.auditTrack - prevState.auditTrack);
     }
@@ -795,9 +819,10 @@ export class LearningAgent {
       reward += this.rewards.cleanProduction;
     }
     
-    // AGGRESSIVE BONUS: Reward high-value illegal plays
-    if ((action === 'play-safe' || action === 'play-dump') && pointsGained > 15) {
-      reward += this.rewards.aggressiveBonus;
+    // OPTIMAL SAFE RANGE: Reward for smart 20-26 illegal plays
+    const prevFeatures = this.extractFeatures(prevState, playerId);
+    if (action === 'play-safe' && prevFeatures.bestSafeRaw >= 20 && prevFeatures.bestSafeRaw <= 26) {
+      reward += this.rewards.optimalSafe;
     }
     
     // LEAD MAINTENANCE: Reward for being ahead
@@ -852,10 +877,17 @@ export class LearningAgent {
     if (action === 'audit-highest' && pointsGained > 10) {
       reward += this.rewards.successfulAudit;
       
+      // ROI BONUS: Extra reward for profitable audits
+      if (prevFeatures.hasValidAuditHand && prevFeatures.myAuditHandValue > 0) {
+        const roi = prevFeatures.maxHangingValue / prevFeatures.myAuditHandValue;
+        if (roi > 1) {
+          reward += this.rewards.profitableROI;
+        }
+      }
+      
       // MALICIOUS BONUS: Extra reward for auditing the leader
       const prevLeader = [...prevState.players].sort((a, b) => b.score - a.score)[0];
-      const features = this.extractFeatures(prevState, playerId);
-      if (features.bestAuditTarget === prevLeader.id && prevLeader.id !== playerId) {
+      if (prevFeatures.bestAuditTarget === prevLeader.id && prevLeader.id !== playerId) {
         reward += this.rewards.blockLeaderAudit;
         
         // EXTREME BONUS: If leader was close to winning, massive reward
@@ -917,6 +949,11 @@ export class LearningAgent {
     
     const reward = this.calculateReward(prevState, action, newState, playerId);
     
+    // Track feature importance when we get good rewards
+    if (reward > 10) {
+      this.trackFeatureImportance(prevFeatures, reward);
+    }
+    
     // Q-learning update
     const oldQ = this.getQ(prevKey, action);
     
@@ -948,6 +985,96 @@ export class LearningAgent {
     this.epsilon = Math.max(0.05, 0.3 * Math.pow(0.995, episodesCompleted));
     this.stats.exploration = this.epsilon;
     this.stats.episodesCompleted = episodesCompleted;
+  }
+  
+  // Track which features correlate with high rewards
+  private trackFeatureImportance(features: StateFeatures, reward: number) {
+    // CRITICAL THRESHOLDS
+    const canPlayDangerous = features.bestDumpRaw >= 27;
+    const nearExternal = features.auditTrack >= 4;
+    const leaderNearWin = Math.max(features.opp1Score, features.opp2Score, features.opp3Score) >= 250;
+    
+    // Track the features that actually matter
+    if (features.hasTripsPlus) this.updateFeatureImportance('hasTripsPlus', reward);
+    if (features.hasValidAuditHand) this.updateFeatureImportance('canAudit', reward);
+    if (features.wouldTriggerExternal) this.updateFeatureImportance('wouldTriggerExternal', -Math.abs(reward));
+    if (canPlayDangerous) this.updateFeatureImportance('has27+Option', reward);
+    if (features.bestSafeRaw >= 20 && features.bestSafeRaw <= 26) {
+      this.updateFeatureImportance('optimalSafeRange', reward);
+    }
+    
+    // Position & timing features
+    if (features.myScoreRank === 1) this.updateFeatureImportance('inLead', reward);
+    if (features.pointsBehindLeader > 30) this.updateFeatureImportance('farBehind', reward * 0.5);
+    if (leaderNearWin) this.updateFeatureImportance('leaderNearWin', reward * 2);
+    if (nearExternal) this.updateFeatureImportance('nearExternal', reward * 0.8);
+    
+    // Audit ROI tracking
+    if (features.hasValidAuditHand && features.myAuditHandValue > 0) {
+      const roi = features.maxHangingValue / features.myAuditHandValue;
+      if (roi > 1) this.updateFeatureImportance('profitableAuditROI', reward);
+      if (roi < -0.5) this.updateFeatureImportance('lossyAuditROI', reward * 0.5);
+    }
+    
+    // Track critical distributions for dynamic bucketing
+    this.collectDistribution('myScore', features.myScore);
+    this.collectDistribution('27threshold', features.bestDumpRaw >= 27 ? 1 : 0);
+    this.collectDistribution('auditProfit', features.maxHangingValue);
+    this.collectDistribution('crimeLevel', features.myFloorCrime);
+  }
+  
+  private updateFeatureImportance(feature: string, reward: number) {
+    const current = this.featureRewardCorrelation.get(feature) || 0;
+    const count = this.featureUsageCount.get(feature) || 0;
+    
+    // Running average of reward correlation
+    this.featureRewardCorrelation.set(feature, (current * count + reward) / (count + 1));
+    this.featureUsageCount.set(feature, count + 1);
+  }
+  
+  private collectDistribution(feature: string, value: number) {
+    if (!this.featureDistributions.has(feature)) {
+      this.featureDistributions.set(feature, []);
+    }
+    const dist = this.featureDistributions.get(feature)!;
+    dist.push(value);
+    
+    // Keep only last 1000 samples to prevent memory bloat
+    if (dist.length > 1000) {
+      dist.shift();
+    }
+  }
+  
+  // Get top features by importance
+  public getFeatureImportance(): Array<[string, number]> {
+    const importance: Array<[string, number]> = [];
+    
+    for (const [feature, reward] of this.featureRewardCorrelation) {
+      const count = this.featureUsageCount.get(feature) || 1;
+      // Only include features we've seen enough times
+      if (count > 10) {
+        importance.push([feature, reward]);
+      }
+    }
+    
+    return importance.sort((a, b) => b[1] - a[1]);
+  }
+  
+  // Get dynamic buckets based on actual data distribution
+  public getDynamicBuckets(feature: string, numBuckets: number): number[] | null {
+    const dist = this.featureDistributions.get(feature);
+    if (!dist || dist.length < 100) return null; // Need enough data
+    
+    const sorted = [...dist].sort((a, b) => a - b);
+    const buckets: number[] = [];
+    
+    // Calculate quantiles
+    for (let i = 1; i < numBuckets; i++) {
+      const idx = Math.floor((i / numBuckets) * sorted.length);
+      buckets.push(sorted[idx]);
+    }
+    
+    return buckets;
   }
   
   // Set the current game ID and reset per-game data
@@ -999,6 +1126,7 @@ export class LearningAgent {
         featureVersion: 'v2-75features',
         stateCount: this.qTable.size
       },
+      batchName: this.batchName,
       countedGames: Array.from(this.countedGames) // Track which games we've counted
     };
   }
@@ -1047,6 +1175,11 @@ export class LearningAgent {
       if (data.countedGames) {
         this.countedGames = new Set(data.countedGames);
       }
+      
+      // Restore batch name
+      if (data.batchName) {
+        this.batchName = data.batchName;
+      }
     } catch (e) {
       console.error('Failed to import learning data:', e);
     }
@@ -1069,6 +1202,15 @@ export class LearningAgent {
       episodesCompleted: 0
     };
     localStorage.removeItem('rheinhessen-ai-learning');
+    this.batchName = '';  // Clear batch name on reset
+  }
+  
+  // Get training info for display (batch name or episode count)
+  public getTrainingInfo(): string {
+    if (this.batchName) {
+      return this.batchName;
+    }
+    return `${this.stats.episodesCompleted} episodes`;
   }
 
   // Update turn history (call this when actions are taken)
@@ -1113,8 +1255,17 @@ export class LearningAgent {
   public getInsights(): string[] {
     const insights: string[] = [];
     
-    insights.push(`🎯 SMART: 35 critical features with intelligent bucketing`);
+    insights.push(`⚡ OPTIMIZED: 25 critical features (removed noise)`);
     insights.push(`🧠 Q-table: ${this.qTable.size}/${this.MAX_STATES} states (LRU managed)`);
+    
+    // Show top features by importance
+    const topFeatures = this.getFeatureImportance().slice(0, 5);
+    if (topFeatures.length > 0) {
+      insights.push(`📊 Top features by importance:`);
+      for (const [feature, importance] of topFeatures) {
+        insights.push(`  • ${feature}: ${importance.toFixed(1)} avg reward`);
+      }
+    }
     
     // Most valuable states
     const stateValues: Array<[string, number]> = [];

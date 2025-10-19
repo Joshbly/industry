@@ -4,7 +4,7 @@ import type { Card as CardType, PlayerState } from '../engine/types';
 import { bestLegalGreedy, bestSafeIllegalGreedy, getHandType, isLegalExact } from '../engine/evaluation';
 import { rawValue } from '../engine/deck';
 import { scoreLegal, scoreIllegal, calculateTaxedValue } from '../engine/scoring';
-import { AITrainer } from './AITrainer';
+import { AITrainer, getLearningAgent } from './AITrainer';
 
 function FactoryCard({ card, size = 'tiny' }: { card: CardType; size?: 'tiny' | 'small' | 'medium' }) {
   const rankStr = card.r <= 10 ? card.r.toString() : 
@@ -191,6 +191,22 @@ function CorporateRival({
     low: 'border-gray-600 bg-gray-900/50'
   };
   
+  // Get training info for learner agents
+  const getTrainingInfo = () => {
+    if (player.persona && typeof player.persona === 'string' && player.persona.startsWith('Learner-')) {
+      const agentName = player.persona.replace('Learner-', '');
+      try {
+        const agent = getLearningAgent(agentName);
+        return agent.getTrainingInfo();
+      } catch {
+        return '';
+      }
+    }
+    return '';
+  };
+  
+  const trainingInfo = getTrainingInfo();
+  
   return (
     <div className={`
       ${isExpanded ? 'w-80' : 'w-72'} 
@@ -205,7 +221,12 @@ function CorporateRival({
           <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-yellow-400 animate-pulse' : 'bg-gray-500'}`} />
           <div>
             <div className="text-white font-bold">{player.name}</div>
-            <div className="text-xs text-gray-400">{player.persona} Corp.</div>
+            <div className="text-xs text-gray-400">
+              {player.persona} Corp.
+              {trainingInfo && (
+                <span className="ml-1 text-purple-400">({trainingInfo})</span>
+              )}
+            </div>
           </div>
         </div>
         <div className="text-right">

@@ -113,8 +113,8 @@ Choose one:
 - **Illegal (Dangerous, ≥27)**: (Raw Value × 0.60) - 5
 
 ### Audit Penalties
-- **Internal Audit Leftover**: Raw Value × 1.40 (fined from victim)
-- **External Audit Leftover**: Raw Value × 1.40 (double penalty)
+- **Internal Audit Leftover**: Raw Value × 1.50 (fined from victim)
+- **External Audit Leftover**: Raw Value × 1.50 (double penalty)
 
 ---
 

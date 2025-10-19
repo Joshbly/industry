@@ -420,13 +420,18 @@ export function AITrainer() {
         await runTrainingEpisode(i + 1);
         setCurrentEpisode(i + 1);
         
-        // Update UI periodically
+        // Update UI and save progress periodically
         if (i % 10 === 0) {
           const allInsights: string[] = [];
           agents.forEach(agent => {
             allInsights.push(`=== ${agent.name} ===`);
             allInsights.push(...agent.getInsights());
             allInsights.push('');
+            // Save progress with current batch name
+            if (!agent.batchName) {
+              agent.batchName = currentBatchName;
+            }
+            agent.saveToStorage();
           });
           setInsights(allInsights);
           await new Promise(resolve => setTimeout(resolve, trainingSpeed));

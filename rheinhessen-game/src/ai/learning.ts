@@ -137,15 +137,19 @@ export interface AgentConfig {
   name?: string;         // For tracking different agents
 }
 
-// Q-learning agent
+// Q-learning agent with OPTIMIZED memory management
 export class LearningAgent {
   private qTable: Map<string, Map<Action, number>> = new Map();
+  private stateAccessOrder: Map<string, number> = new Map(); // LRU tracking
+  private accessCounter = 0;
+  private readonly MAX_STATES = 20000; // Higher cap with better discretization
+  
   private epsilon: number; // Exploration rate
   private alpha: number; // Learning rate  
   private gamma: number; // Discount factor
   public name: string;
   
-  // Turn history for calculating momentum and recent actions
+  // Turn history - CLEARED after each game to prevent memory bloat
   private turnHistory: Array<{
     turnNumber: number;
     playerId: number;
@@ -505,8 +509,9 @@ export class LearningAgent {
     };
   }
 
-  // Discretize features for Q-table key - using top 35 most important features (including hanging values)
+  // OPTIMIZED state discretization - coarser buckets = fewer states = faster training
   private stateToKey(features: StateFeatures): string {
+    // Faster discretization with fewer buckets
     const d = (value: number, buckets: number[]): number => {
       for (let i = 0; i < buckets.length; i++) {
         if (value <= buckets[i]) return i;
@@ -516,55 +521,55 @@ export class LearningAgent {
     
     const b = (value: boolean): number => value ? 1 : 0;
     
-    // Select the most impactful features for state representation
-    // We can't use all 85+ features or the state space would be too large
+    // SMART: Use ALL 35 critical features with INTELLIGENT bucketing
+    // This gives rich state representation while keeping state count manageable
     return [
-      // Core hand features (5)
-      d(features.handSize, [5, 7, 10, 15]),
-      b(features.hasLegal),
-      b(features.hasTripsPlus),
-      d(features.bestLegalRaw, [15, 25, 35, 50]),
-      d(features.bestSafeRaw, [15, 25, 35]),
+      // Hand composition (7 features) - Critical for play decisions
+      d(features.handSize, [6, 10, 14]),                    // 4 buckets
+      b(features.hasLegal),                                 // Binary
+      b(features.hasTripsPlus),                            // KEY for audits!
+      d(features.bestLegalRaw, [20, 35, 50]),              // 4 buckets  
+      d(features.bestSafeRaw, [20, 35]),                   // 3 buckets
+      d(features.numPairs, [1, 2]),                        // Pairs for building
+      b(features.hasAce || features.hasKing),              // High cards
       
-      // Position features (4)
-      features.myScoreRank,
-      d(features.myScore, [50, 100, 150, 200]),
-      d(features.pointsBehindLeader, [10, 30, 50]),
-      d(features.myFloorCrime, [20, 40, 60]),
+      // Position tracking (5 features) - Know where we stand
+      features.myScoreRank,                                 // 1-4 exact
+      d(features.myScore, [75, 150, 225]),                 // 4 buckets
+      d(features.pointsBehindLeader, [20, 50]),            // Gap to first
+      d(features.myFloorCrime, [25, 50]),                  // Vulnerability
+      d(features.myProductionCount, [3, 7]),               // Game stage
       
-      // Opponent features (3) - aggregate instead of individual
-      d(features.highestCrimeFloor, [20, 40, 60]),
-      d(Math.max(features.opp1Score, features.opp2Score, features.opp3Score), [50, 100, 150]),
-      d(features.totalTableCrime, [50, 100, 150, 200]),
+      // Individual opponents (9 features) - CRITICAL for targeting
+      d(features.opp1Score, [100, 200]),                   // Track each
+      d(features.opp1FloorCrime, [20, 45]),                // Individual crime
+      d(features.opp1HandSize, [5, 10]),                   // Their strength
+      d(features.opp2Score, [100, 200]),
+      d(features.opp2FloorCrime, [20, 45]),
+      d(features.opp2HandSize, [5, 10]),
+      d(features.opp3Score, [100, 200]),
+      d(features.opp3FloorCrime, [20, 45]),
+      d(features.opp3HandSize, [5, 10]),
       
-      // Audit features (4)
-      features.auditTrack,
-      d(features.auditMomentum, [0, 1, 2]),
-      b(features.wouldTriggerExternal),
-      d(features.externalRisk * 10, [2, 5, 8]),
+      // Audit state (7 features) - Full audit awareness
+      Math.min(features.auditTrack, 4),                    // Track position
+      b(features.wouldTriggerExternal),                    // External risk
+      b(features.hasValidAuditHand),                       // Can audit?
+      d(features.maxHangingValue, [-15, 0, 15]),          // Profit level
+      features.bestAuditTarget,                            // WHO to target
+      d(features.myAuditHandValue, [15, 20]),             // Audit cost
+      d(features.myVulnerability, [20, 40]),              // Our risk
       
-      // Hanging value features (5) - NEW!
-      b(features.hasValidAuditHand),
-      d(features.myVulnerability, [10, 20, 40]),
-      d(features.maxHangingValue, [-10, 0, 10, 20]),
-      d(features.auditProfitRatio * 10, [-5, 0, 5, 10]),
-      features.bestAuditTarget >= 0 ? 1 : 0,
+      // Game phase (3 features) - Strategic timing
+      features.gamePhase,                                  // 0-3
+      b(features.isEndgame),                              // Final push?
+      d(features.estimatedTurnsLeft, [5, 10]),            // Time left
       
-      // Game phase features (3)
-      features.gamePhase,
-      d(features.estimatedTurnsLeft, [5, 10, 15]),
-      b(features.isEndgame),
-      
-      // Strategic features (3)
-      b(features.canBlockLeader),
-      b(features.shouldRace),
-      d(features.scoreGap, [20, 50, 80]),
-      
-      // Additional discriminators (4)
-      d(features.numPairs + features.numTrips, [0, 1, 2, 3]),
-      b(features.hasFlush || features.hasStraight),
-      d(features.volatility, [5, 10, 20]),
-      d(features.highCardsRemaining, [5, 10, 15])
+      // Strategic indicators (4 features) - High-level strategy  
+      b(features.canBlockLeader),                         // Stop winner?
+      b(features.shouldRace),                             // Need points?
+      b(features.shouldDump),                             // Bad hand?
+      d(features.highestCrimeFloor, [30, 60])             // Max target
     ].join('-');
   }
 
@@ -627,17 +632,39 @@ export class LearningAgent {
     return actions;
   }
 
-  // Get Q-value for state-action pair
+  // Get Q-value with LRU tracking
   private getQ(stateKey: string, action: Action): number {
+    // Track access for LRU
+    this.stateAccessOrder.set(stateKey, this.accessCounter++);
+    
     if (!this.qTable.has(stateKey)) {
-      this.qTable.set(stateKey, new Map());
+      // Don't create new states in getQ to avoid bloat
+      return 0;
     }
     const actionValues = this.qTable.get(stateKey)!;
     return actionValues.get(action) || 0;
   }
 
-  // Update Q-value
+  // Update Q-value with EFFICIENT LRU eviction
   private updateQ(stateKey: string, action: Action, value: number) {
+    // Track access for LRU
+    this.stateAccessOrder.set(stateKey, this.accessCounter++);
+    
+    // Enforce size limit with batch LRU eviction for efficiency
+    if (!this.qTable.has(stateKey) && this.qTable.size >= this.MAX_STATES) {
+      // Batch evict: Remove oldest 5% when at capacity
+      const evictCount = Math.floor(this.MAX_STATES * 0.05); // Evict 1000 states
+      const sortedStates = Array.from(this.stateAccessOrder.entries())
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, evictCount);
+      
+      // Batch delete for efficiency
+      for (const [key] of sortedStates) {
+        this.qTable.delete(key);
+        this.stateAccessOrder.delete(key);
+      }
+    }
+    
     if (!this.qTable.has(stateKey)) {
       this.qTable.set(stateKey, new Map());
     }
@@ -923,9 +950,22 @@ export class LearningAgent {
     this.stats.episodesCompleted = episodesCompleted;
   }
   
-  // Set the current game ID to track game completions
+  // Set the current game ID and reset per-game data
   public setGameId(gameId: string) {
     this.currentGameId = gameId;
+    // Clear turn history to prevent memory bloat
+    this.turnHistory = [];
+    
+    // Periodically clean up old access tracking data
+    if (this.accessCounter > 100000) {
+      // Reset access tracking to prevent integer overflow
+      this.stateAccessOrder.clear();
+      this.accessCounter = 0;
+      // Re-add current states with fresh access times
+      for (const key of this.qTable.keys()) {
+        this.stateAccessOrder.set(key, this.accessCounter++);
+      }
+    }
   }
 
   // Save learned Q-table
@@ -1073,8 +1113,8 @@ export class LearningAgent {
   public getInsights(): string[] {
     const insights: string[] = [];
     
-    insights.push(`📊 Processing 85+ features (including hanging values)`);
-    insights.push(`🧠 Q-table: ${this.qTable.size} unique states mapped`);
+    insights.push(`🎯 SMART: 35 critical features with intelligent bucketing`);
+    insights.push(`🧠 Q-table: ${this.qTable.size}/${this.MAX_STATES} states (LRU managed)`);
     
     // Most valuable states
     const stateValues: Array<[string, number]> = [];
@@ -1113,7 +1153,7 @@ export class LearningAgent {
     }
     
     insights.push(`🎲 Exploration: ${Math.round(this.epsilon * 100)}% random actions`);
-    insights.push(`💾 Memory: ${this.qTable.size} states × 5 actions`);
+    insights.push(`💾 Memory: ${this.qTable.size} states (max ${this.MAX_STATES})`);
     
     return insights;
   }

@@ -47,8 +47,14 @@ function findBestAuditHand(hand: Card[]): { cards: Card[]; raw: number } | null 
 
 export function createMatch(
   seed?: string,
-  options = { targetScore: 300, escalating: true }
+  options: { targetScore?: number; escalating?: boolean; randomizeStart?: boolean } = {}
 ): MatchState {
+  // Apply defaults
+  const finalOptions = {
+    targetScore: options.targetScore ?? 300,
+    escalating: options.escalating ?? true,
+    randomizeStart: options.randomizeStart ?? true
+  };
   const deck = shuffle(makeDoubleDeck(), seed);
   
   const players: PlayerState[] = [
@@ -65,13 +71,21 @@ export function createMatch(
     deckIndex += 7;
   }
   
+  // Randomize starting player if requested (default: true for fairness)
+  const startingPlayer = finalOptions.randomizeStart ? 
+    Math.floor(Math.random() * 4) : 
+    0;
+  
   return {
     players,
     deck: deck.slice(deckIndex),
     discard: [],
     auditTrack: 0,
-    turnIdx: 0,
-    options
+    turnIdx: startingPlayer,
+    options: {
+      targetScore: finalOptions.targetScore,
+      escalating: finalOptions.escalating
+    }
   };
 }
 

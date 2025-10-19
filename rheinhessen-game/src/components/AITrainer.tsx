@@ -7,6 +7,34 @@ const learningAgents = new Map<string, LearningAgent>();
 
 // Default configurations for different agent variants
 const AGENT_CONFIGS: AgentConfig[] = [
+  // WARZONE AGENTS - Pure competition, only winning matters
+  {
+    name: 'Warzone-1',
+    epsilon: 0.5,       // Very high exploration
+    alpha: 0.25,        // Very fast learning
+    gamma: 0.95         // Balanced horizon
+    // No reward weights - uses pure warzone system
+  },
+  {
+    name: 'Warzone-2',
+    epsilon: 0.5,
+    alpha: 0.25,
+    gamma: 0.95
+  },
+  {
+    name: 'Warzone-3',
+    epsilon: 0.5,
+    alpha: 0.25,
+    gamma: 0.95
+  },
+  {
+    name: 'Warzone-4',
+    epsilon: 0.5,
+    alpha: 0.25,
+    gamma: 0.95
+  },
+  
+  // LEGACY AGENTS - Strategy-focused personas
   {
     name: 'Explorer',
     epsilon: 0.4,       // High exploration
@@ -45,14 +73,38 @@ const AGENT_CONFIGS: AgentConfig[] = [
       pointGain: 1.5,
       winBonus: 150,
       positionBonus: 30,
-      illegalPenalty: -2  // Less worried about illegal
+      illegalPenalty: 2  // Less worried about illegal
     }
   }
 ];
 
 export function getLearningAgent(name: string = 'Balanced'): LearningAgent {
   if (!learningAgents.has(name)) {
-    const config = AGENT_CONFIGS.find(c => c.name === name) || AGENT_CONFIGS[2];
+    // Find config for this agent name
+    let config = AGENT_CONFIGS.find(c => c.name === name);
+    
+    // If no config found, create a default one based on the name
+    if (!config) {
+      console.warn(`No config found for agent: ${name}, using default`);
+      if (name.startsWith('Warzone')) {
+        // Create warzone config
+        config = {
+          name,
+          epsilon: 0.5,
+          alpha: 0.25,
+          gamma: 0.95
+        };
+      } else {
+        // Use balanced config as default
+        config = AGENT_CONFIGS.find(c => c.name === 'Balanced') || {
+          name,
+          epsilon: 0.3,
+          alpha: 0.12,
+          gamma: 0.95
+        };
+      }
+    }
+    
     learningAgents.set(name, new LearningAgent(config));
   }
   return learningAgents.get(name)!;
@@ -77,6 +129,7 @@ export function AITrainer() {
   const [currentEpisode, setCurrentEpisode] = useState(0);
   const [insights, setInsights] = useState<string[]>([]);
   const [showTrainer, setShowTrainer] = useState(false);
+  const [isWarzoneMode, setIsWarzoneMode] = useState(false);
   const [selectedAgents, setSelectedAgents] = useState<string[]>(['Explorer', 'Conservative', 'Balanced', 'Aggressive']);
   const [trainingMode, setTrainingMode] = useState<'self-play' | 'vs-bots'>('self-play');
   const [useLearnerInGames, setUseLearnerInGames] = useState(
@@ -103,17 +156,47 @@ export function AITrainer() {
     };
   });
   
-  // Get all selected agents
-  const agents = selectedAgents.map(name => getLearningAgent(name));
+  // Get all selected agents - ensure they're initialized
+  const agents = selectedAgents.map(name => {
+    const agent = getLearningAgent(name);
+    // Ensure agent is properly initialized
+    if (!agent) {
+      console.error(`Failed to get agent: ${name}`);
+    }
+    return agent;
+  }).filter(Boolean);  // Remove any undefined agents
+  
+  // Switch agents when warzone mode changes
+  useEffect(() => {
+    if (isWarzoneMode) {
+      setSelectedAgents(['Warzone-1', 'Warzone-2', 'Warzone-3', 'Warzone-4']);
+      setCurrentBatchName('WARZONE');
+    } else {
+      setSelectedAgents(['Explorer', 'Conservative', 'Balanced', 'Aggressive']);
+      setCurrentBatchName('Legacy');
+    }
+  }, [isWarzoneMode]);
   
   // Load saved batches on mount
   useEffect(() => {
-    const saved = localStorage.getItem('rheinhessen-ai-batches');
-    if (saved) {
-      try {
-        setSavedBatches(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to load saved batches:', e);
+    try {
+      const saved = localStorage.getItem('rheinhessen-ai-batches');
+      if (saved) {
+        const batches = JSON.parse(saved);
+        setSavedBatches(batches);
+        
+        // Check storage size
+        const size = new Blob([saved]).size / (1024 * 1024);
+        if (size > 3) {
+          console.warn(`Batch storage using ${size.toFixed(2)}MB. Consider cleaning old batches.`);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load saved batches:', e);
+      // If corrupt data, offer to clear
+      if (confirm('Failed to load saved batches. Clear corrupted data?')) {
+        localStorage.removeItem('rheinhessen-ai-batches');
+        setSavedBatches([]);
       }
     }
   }, []);
@@ -142,24 +225,58 @@ export function AITrainer() {
     // Set game ID for all agents to track this game properly
     agents.forEach(agent => agent.setGameId(gameId));
     
-    let match = createMatch(Math.random().toString());
+    // Create match with randomized starting position for fairness
+    let match = createMatch(Math.random().toString(), { 
+      targetScore: 300, 
+      escalating: true, 
+      randomizeStart: true  // Always randomize in training
+    });
+    
+    // Log starting player for debugging position bias
+    if (episodeNumber % 50 === 1) {
+      console.log(`Episode ${episodeNumber}: Starting player is position ${match.turnIdx}`);
+    }
+    
     match = startTurn(match);
     
     // Set up players based on training mode
     if (trainingMode === 'self-play') {
-      // All 4 players are learning agents with different configs
-      selectedAgents.forEach((agentName, idx) => {
+      // RANDOMIZE SEAT ASSIGNMENTS for fairness!
+      // Create a shuffled copy of selected agents
+      const shuffledAgents = [...selectedAgents];
+      
+      // Fisher-Yates shuffle for true randomization
+      for (let i = shuffledAgents.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffledAgents[i], shuffledAgents[j]] = [shuffledAgents[j], shuffledAgents[i]];
+      }
+      
+      // Assign shuffled agents to seats
+      shuffledAgents.forEach((agentName, idx) => {
         if (idx < 4) {
           match.players[idx].persona = `Learner-${agentName}` as any;
+          
+          // Log seat assignments periodically
+          if (episodeNumber % 50 === 1 && idx === 0) {
+            console.log(`Episode ${episodeNumber} seat assignments: ${shuffledAgents.slice(0, 4).join(', ')}`);
+          }
         }
       });
     } else {
-      // Mix of learners and regular bots
-      match.players[0].persona = `Learner-${selectedAgents[0]}` as any;
-      if (selectedAgents.length > 1) {
-        match.players[1].persona = `Learner-${selectedAgents[1]}` as any;
+      // Mix of learners and regular bots - also randomize learner positions
+      const learnerPositions = [0, 1];
+      
+      // Shuffle which positions get learners
+      for (let i = learnerPositions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [learnerPositions[i], learnerPositions[j]] = [learnerPositions[j], learnerPositions[i]];
       }
-      // Keep players 2 and 3 as regular bots
+      
+      match.players[learnerPositions[0]].persona = `Learner-${selectedAgents[0]}` as any;
+      if (selectedAgents.length > 1) {
+        match.players[learnerPositions[1]].persona = `Learner-${selectedAgents[1]}` as any;
+      }
+      // Keep other players as regular bots
     }
     
     const previousStates: Array<{
@@ -369,37 +486,82 @@ export function AITrainer() {
   
   // Batch management functions
   const saveBatch = (name: string) => {
-    const data: any = {};
-    let totalEpisodes = 0;
-    let totalWinRate = 0;
-    let totalScore = 0;
-    let agentCount = 0;
-    
-    agents.forEach(agent => {
-      agent.batchName = name;  // Set batch name on agents
-      data[agent.name] = agent.exportKnowledge();
-      totalEpisodes += agent.stats.episodesCompleted;
-      totalWinRate += agent.stats.winRate;
-      totalScore += agent.stats.avgScore;
-      agentCount++;
-    });
-    
-    const batch: SavedBatch = {
-      name,
-      date: new Date().toISOString(),
-      agents: data,
-      metadata: {
-        totalEpisodes: Math.round(totalEpisodes / agentCount),
-        avgWinRate: totalWinRate / agentCount,
-        avgScore: totalScore / agentCount
+    try {
+      console.log('Saving batch:', name, 'Agents:', agents.length);
+      
+      if (agents.length === 0) {
+        alert('No agents to save!');
+        return;
       }
-    };
-    
-    const newBatches = [...savedBatches, batch];
-    setSavedBatches(newBatches);
-    localStorage.setItem('rheinhessen-ai-batches', JSON.stringify(newBatches));
-    setCurrentBatchName(name);
-    setBatchName('');
+      
+      const data: any = {};
+      let totalEpisodes = 0;
+      let totalWinRate = 0;
+      let totalScore = 0;
+      let agentCount = 0;
+      
+      agents.forEach(agent => {
+        agent.batchName = name;  // Set batch name on agents
+        // Save to agent-specific storage immediately
+        agent.saveToStorage();
+        const knowledge = agent.exportKnowledge();
+        
+        // Check if knowledge export succeeded
+        if (!knowledge) {
+          console.error('Failed to export knowledge for agent:', agent.name);
+          return;
+        }
+        
+        data[agent.name] = knowledge;
+        totalEpisodes += agent.stats.episodesCompleted || 0;
+        totalWinRate += agent.stats.winRate || 0;
+        totalScore += agent.stats.avgScore || 0;
+        agentCount++;
+      });
+      
+      if (agentCount === 0) {
+        alert('No agent data to save!');
+        return;
+      }
+      
+      const batch: SavedBatch = {
+        name,
+        date: new Date().toISOString(),
+        agents: data,
+        metadata: {
+          totalEpisodes: Math.round(totalEpisodes / agentCount),
+          avgWinRate: totalWinRate / agentCount,
+          avgScore: totalScore / agentCount
+        }
+      };
+      
+      const newBatches = [...savedBatches, batch];
+      
+      // Check localStorage size before saving
+      const dataSize = JSON.stringify(newBatches).length;
+      const sizeMB = dataSize / (1024 * 1024);
+      console.log(`Saving ${sizeMB.toFixed(2)}MB to localStorage`);
+      
+      if (sizeMB > 5) {
+        // localStorage has ~5-10MB limit
+        alert(`Warning: Batch data is ${sizeMB.toFixed(2)}MB. May exceed localStorage limit. Consider exporting to file instead.`);
+      }
+      
+      setSavedBatches(newBatches);
+      localStorage.setItem('rheinhessen-ai-batches', JSON.stringify(newBatches));
+      setCurrentBatchName(name);
+      setBatchName('');
+      
+      console.log('Batch saved successfully!');
+      alert(`Batch "${name}" saved successfully!`);
+    } catch (error) {
+      console.error('Failed to save batch:', error);
+      if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+        alert('Storage quota exceeded! Try deleting old batches or exporting to file instead.');
+      } else {
+        alert(`Failed to save batch: ${error}`);
+      }
+    }
   };
   
   const loadBatch = (batch: SavedBatch) => {
@@ -410,6 +572,9 @@ export function AITrainer() {
     Object.keys(batch.agents).forEach(agentName => {
       const agent = getLearningAgent(agentName);
       agent.importKnowledge(batch.agents[agentName]);
+      // Ensure batch name is set and saved
+      agent.batchName = batch.name;
+      agent.saveToStorage();
     });
     
     // Update insights
@@ -577,6 +742,27 @@ export function AITrainer() {
                     ) : (
                       <p className="text-gray-400 text-sm text-center py-2">No saved batches</p>
                     )}
+                    
+                    {/* Storage management */}
+                    {savedBatches.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-gray-700 flex justify-between items-center">
+                        <div className="text-xs text-gray-400">
+                          {savedBatches.length} batches saved
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (confirm('Clear ALL saved batches? This cannot be undone!')) {
+                              localStorage.removeItem('rheinhessen-ai-batches');
+                              setSavedBatches([]);
+                              alert('All batches cleared!');
+                            }
+                          }}
+                          className="px-2 py-1 bg-red-700 hover:bg-red-800 text-white text-xs rounded"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -644,10 +830,21 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          <option value="Explorer">Learner: Explorer</option>
-                          <option value="Conservative">Learner: Conservative</option>
-                          <option value="Balanced">Learner: Balanced</option>
-                          <option value="Aggressive">Learner: Aggressive</option>
+                          {isWarzoneMode ? (
+                            <>
+                              <option value="Warzone-1">Warzone-1</option>
+                              <option value="Warzone-2">Warzone-2</option>
+                              <option value="Warzone-3">Warzone-3</option>
+                              <option value="Warzone-4">Warzone-4</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="Explorer">Learner: Explorer</option>
+                              <option value="Conservative">Learner: Conservative</option>
+                              <option value="Balanced">Learner: Balanced</option>
+                              <option value="Aggressive">Learner: Aggressive</option>
+                            </>
+                          )}
                         </select>
                       </div>
                       <div className="flex items-center justify-between">
@@ -658,10 +855,21 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          <option value="Explorer">Learner: Explorer</option>
-                          <option value="Conservative">Learner: Conservative</option>
-                          <option value="Balanced">Learner: Balanced</option>
-                          <option value="Aggressive">Learner: Aggressive</option>
+                          {isWarzoneMode ? (
+                            <>
+                              <option value="Warzone-1">Warzone-1</option>
+                              <option value="Warzone-2">Warzone-2</option>
+                              <option value="Warzone-3">Warzone-3</option>
+                              <option value="Warzone-4">Warzone-4</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="Explorer">Learner: Explorer</option>
+                              <option value="Conservative">Learner: Conservative</option>
+                              <option value="Balanced">Learner: Balanced</option>
+                              <option value="Aggressive">Learner: Aggressive</option>
+                            </>
+                          )}
                         </select>
                       </div>
                       <div className="flex items-center justify-between">
@@ -672,10 +880,21 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          <option value="Explorer">Learner: Explorer</option>
-                          <option value="Conservative">Learner: Conservative</option>
-                          <option value="Balanced">Learner: Balanced</option>
-                          <option value="Aggressive">Learner: Aggressive</option>
+                          {isWarzoneMode ? (
+                            <>
+                              <option value="Warzone-1">Warzone-1</option>
+                              <option value="Warzone-2">Warzone-2</option>
+                              <option value="Warzone-3">Warzone-3</option>
+                              <option value="Warzone-4">Warzone-4</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="Explorer">Learner: Explorer</option>
+                              <option value="Conservative">Learner: Conservative</option>
+                              <option value="Balanced">Learner: Balanced</option>
+                              <option value="Aggressive">Learner: Aggressive</option>
+                            </>
+                          )}
                         </select>
                       </div>
                     </div>
@@ -689,6 +908,31 @@ export function AITrainer() {
               {/* Agent Selection */}
               <div className="bg-gray-900 rounded p-4">
                 <h3 className="text-white font-semibold mb-3">Training Configuration</h3>
+                
+                {/* WARZONE MODE TOGGLE */}
+                <div className="mb-4 p-3 bg-red-950 border-2 border-red-600 rounded">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-red-400 font-bold">⚔️ WARZONE MODE</div>
+                      <div className="text-xs text-gray-400">Pure competition - Only winning matters</div>
+                    </div>
+                    <button
+                      onClick={() => setIsWarzoneMode(!isWarzoneMode)}
+                      className={`px-4 py-2 rounded font-bold transition-all ${
+                        isWarzoneMode
+                          ? 'bg-red-600 text-white shadow-lg shadow-red-600/50'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      {isWarzoneMode ? 'ACTIVE' : 'OFF'}
+                    </button>
+                  </div>
+                  {isWarzoneMode && (
+                    <div className="mt-2 text-xs text-red-300">
+                      🔥 4 identical killers competing to WIN AT ALL COSTS
+                    </div>
+                  )}
+                </div>
                 
                 <div className="mb-4">
                   <label className="text-sm text-gray-300 block mb-2">Training Mode</label>
@@ -717,25 +961,35 @@ export function AITrainer() {
                 </div>
                 
                 <div>
-                  <label className="text-sm text-gray-300 block mb-2">Active Learner Agents</label>
+                  <label className="text-sm text-gray-300 block mb-2">
+                    {isWarzoneMode ? '⚔️ Warzone Competitors' : 'Active Learner Agents'}
+                  </label>
                   <div className="grid grid-cols-2 gap-2">
-                    {AGENT_CONFIGS.map(config => (
-                      <label key={config.name} className="flex items-center space-x-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedAgents.includes(config.name!)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedAgents([...selectedAgents, config.name!]);
-                            } else {
-                              setSelectedAgents(selectedAgents.filter(n => n !== config.name));
-                            }
-                          }}
-                          className="w-4 h-4 text-blue-600"
-                        />
-                        <span className="text-sm text-gray-300">{config.name}</span>
-                      </label>
-                    ))}
+                    {AGENT_CONFIGS
+                      .filter(config => isWarzoneMode ? 
+                        config.name?.startsWith('Warzone') : 
+                        !config.name?.startsWith('Warzone')
+                      )
+                      .map(config => (
+                        <label key={config.name} className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedAgents.includes(config.name!)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedAgents([...selectedAgents, config.name!]);
+                              } else {
+                                setSelectedAgents(selectedAgents.filter(n => n !== config.name));
+                              }
+                            }}
+                            disabled={isWarzoneMode}  // In warzone, all 4 compete
+                            className={`w-4 h-4 ${isWarzoneMode ? 'text-red-600' : 'text-blue-600'}`}
+                          />
+                          <span className={`text-sm ${isWarzoneMode ? 'text-red-300' : 'text-gray-300'}`}>
+                            {config.name}
+                          </span>
+                        </label>
+                      ))}
                   </div>
                 </div>
                 
@@ -802,21 +1056,43 @@ export function AITrainer() {
                   
                   <button
                     onClick={() => {
-                      const data: any = {
-                        batchName: currentBatchName,
-                        exportDate: new Date().toISOString(),
-                        agents: {}
-                      };
-                      agents.forEach(agent => {
-                        data.agents[agent.name] = agent.exportKnowledge();
-                      });
-                      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `rheinhessen-batch-${currentBatchName.replace(/\s+/g, '-').toLowerCase()}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
+                      try {
+                        if (agents.length === 0) {
+                          alert('No agents to export!');
+                          return;
+                        }
+                        
+                        const data: any = {
+                          batchName: currentBatchName,
+                          exportDate: new Date().toISOString(),
+                          agents: {}
+                        };
+                        
+                        agents.forEach(agent => {
+                          const knowledge = agent.exportKnowledge();
+                          if (knowledge) {
+                            data.agents[agent.name] = knowledge;
+                          } else {
+                            console.error('Failed to export knowledge for agent:', agent.name);
+                          }
+                        });
+                        
+                        if (Object.keys(data.agents).length === 0) {
+                          alert('No agent data to export!');
+                          return;
+                        }
+                        
+                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `rheinhessen-batch-${currentBatchName.replace(/\s+/g, '-').toLowerCase()}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      } catch (error) {
+                        console.error('Failed to export batch:', error);
+                        alert(`Failed to export batch: ${error}`);
+                      }
                     }}
                     disabled={isTraining}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50"
@@ -845,6 +1121,9 @@ export function AITrainer() {
                                 if (typeof agentsData[agentName] === 'object') {
                                   const agent = getLearningAgent(agentName);
                                   agent.importKnowledge(agentsData[agentName]);
+                                  // Ensure batch name is set and saved
+                                  agent.batchName = batchName;
+                                  agent.saveToStorage();
                                 }
                               });
                               

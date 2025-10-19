@@ -68,7 +68,12 @@ const useGameStore = create<GameStore>((set, get) => ({
   events: [],
 
   newMatch: (seed) => {
-    const match = createMatch(seed);
+    // Create match with randomized starting position for fairness
+    const match = createMatch(seed, {
+      targetScore: 300,
+      escalating: true,
+      randomizeStart: true  // Randomize who goes first
+    });
     
     // Check if we should use the Learner bots
     const useLearner = localStorage.getItem('rheinhessen-use-learner') === 'true';

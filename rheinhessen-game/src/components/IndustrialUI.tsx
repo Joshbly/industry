@@ -514,7 +514,31 @@ export function IndustrialUI() {
       <header className="h-20 bg-black border-b-4 border-yellow-600 flex items-center justify-between px-6">
         <div>
           <h1 className="text-2xl font-bold text-yellow-500">RHEINHESSEN INDUSTRIEWERK GmbH</h1>
-          <div className="text-xs text-gray-400">Corporate Production Management System v2.0</div>
+          <div className="text-xs text-gray-400">
+            Corporate Production Management System v2.0
+            {match.players[match.turnIdx].id === 0 && (
+              <span className="ml-2 text-yellow-400">• YOUR TURN</span>
+            )}
+          </div>
+        </div>
+        
+        {/* Turn Order Indicator */}
+        <div className="flex flex-col items-center">
+          <div className="text-xs text-gray-500">Turn Order</div>
+          <div className="flex gap-1">
+            {[0, 1, 2, 3].map(idx => (
+              <div
+                key={idx}
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
+                  ${match.turnIdx === idx ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-400'}
+                  ${idx === 0 ? 'border-2 border-blue-500' : ''}
+                `}
+                title={match.players[idx].name}
+              >
+                {idx === 0 ? 'H' : idx}
+              </div>
+            ))}
+          </div>
         </div>
         
         {/* Regulatory Compliance Monitor (Audit Track) */}
@@ -671,7 +695,7 @@ export function IndustrialUI() {
                               )}
                               <div className="flex justify-between items-start mb-2">
                                 <div className="text-sm text-gray-400">
-                                  {isReorganized ? `Reorganized Production #${turnNumber}` : `Turn #{turnNumber}`}
+                                  {isReorganized ? `Reorganized Production #${turnNumber}` : `Turn #${turnNumber}`}
                                 </div>
                                 <div className={`text-sm font-bold ${isLegal ? 'text-green-400' : 'text-red-400'}`}>
                                   {isLegal ? `✓ LEGAL (${getHandType(group).toUpperCase()})` : `✗ ILLEGAL (Raw: ${groupRaw})`}

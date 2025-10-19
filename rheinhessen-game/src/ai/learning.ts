@@ -179,48 +179,62 @@ export class LearningAgent {
   private countedGames = new Set<string>();
   private currentGameId: string | null = null;
 
-  // Reward weights - THRESHOLD-AWARE SYSTEM
+  // Reward weights - WARZONE SYSTEM (Only winning matters)
   private rewards = {
-    // Core scoring
-    pointGain: 1.0,        // Every point matters
-    winGame: 300,          // Ultimate goal
-    loseGame: 0,           // No punishment for trying
+    // WINNING IS EVERYTHING
+    winGame: 1000,         // MASSIVE reward for victory
+    beatLearner: 200,      // Extra bonus for beating other learners
     
-    // Position rewards
-    position2nd: 50,       // Good effort
-    position3rd: 10,       // Participation
-    position4th: 0,        // No punishment
-    leadMaintenance: 0.5,  // Per point ahead
+    // Position punishments (harsh reality)
+    position2nd: -100,     // First loser
+    position3rd: -200,     // Failed harder
+    position4th: -300,     // Complete failure
     
-    // Audit track management
-    causeExternal: -50,    // CATASTROPHIC - avoid at all costs
-    avoidExternal: 10,     // Smart timing bonus
-    spike: -5,             // Penalty for adding ticks (27+ plays)
-    optimalSafe: 20,       // Reward for 20-26 sweet spot plays
+    // Score only matters for winning
+    pointGain: 0.5,        // Small reward to encourage scoring
+    leadMaintenance: 2.0,  // Per point ahead - defend your lead
     
-    // Audit rewards
-    successfulAudit: 60,   // High-value tactical move
-    blockLeaderAudit: 80,  // Stop the winner
-    preventWin: 100,       // Critical defensive play
-    holdingAuditCards: 15, // Keep cheap trips ready
-    profitableROI: 30,     // Reward for ROI > 1 audits
+    // Tactical rewards (discover what works)
+    eliminateLeader: 150,  // Destroy the winner
+    crushWeakest: 50,      // Exploit the weak
+    causeExternal: -100,   // Don't self-destruct
     
-    // Hand management
-    cleanProduction: 5,    // Legal play bonus
-    strategicPass: 8,      // Build better hands
-    megaHandBonus: 25,     // Full house/quads/straight
-    handBuilding: 12       // Improve after passing
+    // Discovery bonuses
+    unexploredAction: 20,  // Try new things
+    strategyShift: 30,     // Change tactics when losing
+    
+    // No preset strategy rewards - let them figure it out
+    loseGame: -500,        // Losing is failure
+    preventWin: 200,       // Stop others from winning
+    successfulAudit: 0,    // Let them learn if audits help
+    cleanProduction: 0,    // Let them discover if legal is good
+    spike: 0,              // Let them learn about risk
+    strategicPass: 0,      // They'll figure out when to pass
+    megaHandBonus: 0,      // They'll learn what hands win
+    handBuilding: 0,       // No hand-holding
+    holdingAuditCards: 0,  // They'll learn audit timing
+    profitableROI: 0,      // They'll discover profit strategies
+    optimalSafe: 0,        // They'll find safe spots
+    avoidExternal: 0,      // They'll learn or die
+    blockLeaderAudit: 0    // Merged into eliminateLeader
   };
 
   constructor(config: AgentConfig = {}) {
     // Apply configuration
-    this.epsilon = config.epsilon ?? 0.3;
-    this.alpha = config.alpha ?? 0.15;  // Faster learning for aggressive play
-    this.gamma = config.gamma ?? 0.97;   // Strong long-term thinking
-    this.name = config.name ?? 'Learner';
+    this.epsilon = config.epsilon ?? 0.5;    // HIGH exploration to discover strategies
+    this.alpha = config.alpha ?? 0.2;        // Fast learning in warzone
+    this.gamma = config.gamma ?? 0.95;       // Balance immediate and future
+    this.name = config.name ?? 'Warzone';
     
-    // Apply reward weight overrides
-    if (config.rewardWeights) {
+    // In WARZONE mode, ignore persona configs - only winning matters
+    const isWarzone = config.name?.includes('Warzone');
+    if (isWarzone) {
+      // Force pure competition settings
+      this.epsilon = 0.5;  // High exploration initially
+      this.alpha = 0.25;   // Very fast learning
+      this.gamma = 0.95;   // Balanced horizon
+    } else if (config.rewardWeights) {
+      // Legacy persona mode (backwards compatibility)
       this.rewards.pointGain = config.rewardWeights.pointGain ?? this.rewards.pointGain;
       this.rewards.winGame = config.rewardWeights.winBonus ?? this.rewards.winGame;
       this.rewards.position2nd = config.rewardWeights.positionBonus ?? this.rewards.position2nd;
@@ -786,7 +800,13 @@ export class LearningAgent {
     }
   }
 
-  // Calculate immediate reward
+  // Track if opponent is a learner for competitive rewards
+  private isLearnerOpponent(player: any): boolean {
+    return player.persona?.toString().includes('Learner') || 
+           player.persona?.toString().includes('Warzone') || false;
+  }
+  
+  // Calculate immediate reward - WARZONE VERSION
   public calculateReward(
     prevState: MatchState,
     action: Action,
@@ -797,103 +817,66 @@ export class LearningAgent {
     
     const prevPlayer = prevState.players[playerId];
     const newPlayer = newState.players[playerId];
+    const prevFeatures = this.extractFeatures(prevState, playerId);
     
-    // Points gained
+    // Basic score tracking (small reward to encourage scoring)
     const pointsGained = newPlayer.score - prevPlayer.score;
     reward += pointsGained * this.rewards.pointGain;
     
-    // Check for external audit
-    if (prevState.auditTrack < 5 && newState.auditTrack >= 5) {
-      reward += this.rewards.causeExternal;
-    } else if (prevState.auditTrack >= 3 && newState.auditTrack < 5 && action === 'play-legal') {
-      reward += this.rewards.avoidExternal;
-    }
-    
-    // Spike penalty for dangerous plays
-    if (newState.auditTrack > prevState.auditTrack) {
-      reward += this.rewards.spike * (newState.auditTrack - prevState.auditTrack);
-    }
-    
-    // Legal production bonus
-    if (action === 'play-legal') {
-      reward += this.rewards.cleanProduction;
-    }
-    
-    // OPTIMAL SAFE RANGE: Reward for smart 20-26 illegal plays
-    const prevFeatures = this.extractFeatures(prevState, playerId);
-    if (action === 'play-safe' && prevFeatures.bestSafeRaw >= 20 && prevFeatures.bestSafeRaw <= 26) {
-      reward += this.rewards.optimalSafe;
-    }
-    
-    // LEAD MAINTENANCE: Reward for being ahead
+    // LEAD DOMINANCE: Being ahead is power
     const scores = newState.players.map(p => p.score).sort((a, b) => b - a);
     if (newPlayer.score === scores[0] && scores[1] !== undefined) {
       const leadMargin = newPlayer.score - scores[1];
       reward += leadMargin * this.rewards.leadMaintenance;
     }
     
-    // STRATEGIC PASS: Reward passing with a weak hand (< 3 cards or no pairs)
-    if (action === 'pass') {
-      const hasWeakHand = prevPlayer.hand.length <= 3 || 
-                         !this.extractFeatures(prevState, playerId).hasLegal;
-      if (hasWeakHand) {
-        reward += this.rewards.strategicPass;
-      }
-    }
-    
-    // MEGA HAND BONUS: Reward for playing full house, quads, or straight flush!
-    if (action === 'play-legal' && pointsGained > 0) {
-      const features = this.extractFeatures(prevState, playerId);
-      if (features.hasFullHouse || features.hasFlush || features.hasStraight) {
-        reward += this.rewards.megaHandBonus;
-      }
-    }
-    
-    // HAND BUILDING: Reward if we improved our hand after passing
-    // Check if our last action was a pass and now we're playing
-    if ((action === 'play-legal' || action === 'play-safe' || action === 'play-dump') && 
-        this.turnHistory.length > 0) {
-      const lastPlayerTurn = this.turnHistory
-        .filter(t => t.playerId === playerId)
-        .slice(-1)[0];
-      
-      if (lastPlayerTurn && lastPlayerTurn.action === 'pass' && pointsGained > 20) {
-        // We passed last turn and now played a good hand!
-        reward += this.rewards.handBuilding;
-      }
-    }
-    
-    // HOLDING AUDIT CARDS: Reward for keeping cheap trips
-    // This encourages saving audit ammunition instead of playing it for points
-    if (action === 'pass' || action === 'play-safe') {
-      const features = this.extractFeatures(newState, playerId);
-      if (features.hasValidAuditHand && features.myAuditHandValue <= 15) {
-        // Holding cheap trips (2s, 3s, 4s, 5s) for audit opportunities
-        reward += this.rewards.holdingAuditCards;
-      }
-    }
-    
-    // Successful audit bonus
-    if (action === 'audit-highest' && pointsGained > 10) {
-      reward += this.rewards.successfulAudit;
-      
-      // ROI BONUS: Extra reward for profitable audits
-      if (prevFeatures.hasValidAuditHand && prevFeatures.myAuditHandValue > 0) {
-        const roi = prevFeatures.maxHangingValue / prevFeatures.myAuditHandValue;
-        if (roi > 1) {
-          reward += this.rewards.profitableROI;
-        }
-      }
-      
-      // MALICIOUS BONUS: Extra reward for auditing the leader
+    // DESTRUCTION REWARDS: Eliminate threats
+    if (action === 'audit-highest') {
       const prevLeader = [...prevState.players].sort((a, b) => b.score - a.score)[0];
-      if (prevFeatures.bestAuditTarget === prevLeader.id && prevLeader.id !== playerId) {
-        reward += this.rewards.blockLeaderAudit;
+      const newLeader = [...newState.players].sort((a, b) => b.score - a.score)[0];
+      
+      // Did we knock down the leader?
+      if (prevLeader.id !== playerId && prevLeader.score > newLeader.score) {
+        reward += this.rewards.eliminateLeader;
         
-        // EXTREME BONUS: If leader was close to winning, massive reward
+        // EXTRA: If we prevented imminent win
         if (prevLeader.score >= 250) {
           reward += this.rewards.preventWin;
         }
+      }
+      
+      // Did we crush the weakest? (exploitation)
+      const weakest = [...prevState.players].sort((a, b) => a.score - b.score)[0];
+      if (prevFeatures.bestAuditTarget === weakest.id && weakest.id !== playerId) {
+        reward += this.rewards.crushWeakest;
+      }
+    }
+    
+    // SELF-DESTRUCTION PENALTY
+    if (prevState.auditTrack < 5 && newState.auditTrack >= 5) {
+      reward += this.rewards.causeExternal;
+    }
+    
+    // EXPLORATION BONUS: Try new strategies
+    // Track action patterns and reward deviation when losing
+    if (prevFeatures.myScoreRank > 1) {  // Not in first place
+      const recentActions = this.turnHistory
+        .filter(t => t.playerId === playerId)
+        .slice(-5)
+        .map(t => t.action);
+      
+      const isNewPattern = recentActions.length < 2 || 
+                          recentActions[recentActions.length - 1] !== action;
+      
+      if (isNewPattern) {
+        reward += this.rewards.unexploredAction;
+      }
+      
+      // Strategy shift bonus when changing approach while losing
+      const wasPassive = recentActions.filter(a => a === 'pass' || a === 'legal').length > 3;
+      const nowAggressive = action === 'audit-highest' || action === 'play-dump';
+      if (wasPassive && nowAggressive) {
+        reward += this.rewards.strategyShift;
       }
     }
     
@@ -912,6 +895,11 @@ export class LearningAgent {
         
         if (newState.winnerId === playerId) {
           this.stats.gamesWon++;
+          
+          // Log win by starting position for analysis (every 100 games)
+          if (this.stats.gamesWon % 100 === 0 && this.name.includes('Warzone')) {
+            console.log(`${this.name} won ${this.stats.gamesWon} games (${Math.round(this.stats.winRate * 100)}% win rate)`);
+          }
         }
         
         this.stats.avgScore = this.stats.totalScore / this.stats.gamesPlayed;
@@ -921,7 +909,16 @@ export class LearningAgent {
       // Always give rewards for game end, even if we already counted the game
       if (newState.winnerId === playerId) {
         reward += this.rewards.winGame;
+        
+        // COMPETITIVE BONUS: Extra reward for beating other learners
+        const defeatedLearners = newState.players
+          .filter(p => p.id !== playerId && this.isLearnerOpponent(p))
+          .length;
+        reward += this.rewards.beatLearner * defeatedLearners;
       } else {
+        // HARSH PUNISHMENT for losing
+        reward += this.rewards.loseGame;
+        
         const position = [...newState.players]
           .sort((a, b) => b.score - a.score)
           .findIndex(p => p.id === playerId) + 1;
@@ -980,9 +977,19 @@ export class LearningAgent {
     this.saveToStorage();
   }
 
-  // Decay exploration over time
+  // Decay exploration over time - WARZONE uses aggressive exploration
   public updateExploration(episodesCompleted: number) {
-    this.epsilon = Math.max(0.05, 0.3 * Math.pow(0.995, episodesCompleted));
+    const isWarzone = this.name.includes('Warzone');
+    
+    if (isWarzone) {
+      // Warzone: Start high (0.5), decay slower, keep higher minimum (0.15)
+      // This ensures continuous discovery of new strategies
+      this.epsilon = Math.max(0.15, 0.5 * Math.pow(0.998, episodesCompleted));
+    } else {
+      // Legacy mode
+      this.epsilon = Math.max(0.05, 0.3 * Math.pow(0.995, episodesCompleted));
+    }
+    
     this.stats.exploration = this.epsilon;
     this.stats.episodesCompleted = episodesCompleted;
   }
@@ -1096,10 +1103,12 @@ export class LearningAgent {
   }
 
   // Save learned Q-table
-  private saveToStorage() {
+  public saveToStorage() {
     try {
       const data = this.exportKnowledge();
-      localStorage.setItem('rheinhessen-ai-learning', JSON.stringify(data));
+      // Save to agent-specific key
+      const storageKey = `rheinhessen-ai-learning-${this.name}`;
+      localStorage.setItem(storageKey, JSON.stringify(data));
     } catch (e) {
       console.error('Failed to save learning data:', e);
     }
@@ -1134,7 +1143,15 @@ export class LearningAgent {
   // Load learned Q-table
   private loadFromStorage() {
     try {
-      const saved = localStorage.getItem('rheinhessen-ai-learning');
+      // Try agent-specific key first
+      const storageKey = `rheinhessen-ai-learning-${this.name}`;
+      let saved = localStorage.getItem(storageKey);
+      
+      // Fall back to generic key for backwards compatibility
+      if (!saved) {
+        saved = localStorage.getItem('rheinhessen-ai-learning');
+      }
+      
       if (saved) {
         const data = JSON.parse(saved);
         this.importKnowledge(data);
@@ -1201,6 +1218,10 @@ export class LearningAgent {
       exploration: 0.3,
       episodesCompleted: 0
     };
+    // Remove agent-specific storage
+    const storageKey = `rheinhessen-ai-learning-${this.name}`;
+    localStorage.removeItem(storageKey);
+    // Also try to remove generic key for backwards compatibility
     localStorage.removeItem('rheinhessen-ai-learning');
     this.batchName = '';  // Clear batch name on reset
   }
@@ -1210,7 +1231,12 @@ export class LearningAgent {
     if (this.batchName) {
       return this.batchName;
     }
-    return `${this.stats.episodesCompleted} episodes`;
+    // If no batch name but has episodes, show training status
+    if (this.stats.episodesCompleted > 0) {
+      return `${this.stats.episodesCompleted} episodes`;
+    }
+    // If no training at all
+    return '';
   }
 
   // Update turn history (call this when actions are taken)
@@ -1255,12 +1281,20 @@ export class LearningAgent {
   public getInsights(): string[] {
     const insights: string[] = [];
     
-    insights.push(`⚡ OPTIMIZED: 25 critical features (removed noise)`);
+    const isWarzone = this.name.includes('Warzone');
+    
+    if (isWarzone) {
+      insights.push(`⚔️ WARZONE MODE: Pure competition, only winning matters`);
+      insights.push(`🎯 Focus: WIN AT ALL COSTS (+1000), destroy competitors`);
+    } else {
+      insights.push(`⚡ LEGACY MODE: Strategy-focused learning`);
+    }
+    
     insights.push(`🧠 Q-table: ${this.qTable.size}/${this.MAX_STATES} states (LRU managed)`);
     
     // Show top features by importance
     const topFeatures = this.getFeatureImportance().slice(0, 5);
-    if (topFeatures.length > 0) {
+    if (topFeatures.length > 0 && !isWarzone) {  // Skip for warzone - they figure it out
       insights.push(`📊 Top features by importance:`);
       for (const [feature, importance] of topFeatures) {
         insights.push(`  • ${feature}: ${importance.toFixed(1)} avg reward`);

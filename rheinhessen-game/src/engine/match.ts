@@ -142,9 +142,7 @@ export function applyInternal(
   
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);
-  if (leftover.length > 0) {
-    reorganizedGroups.push(leftover); // Add leftover as final group
-  }
+  // Don't add leftover cards - they are confiscated!
   
   newState.players = newState.players.map(p => {
     if (p.id === accuserId) {
@@ -158,8 +156,9 @@ export function applyInternal(
     if (p.id === targetId) {
       return {
         ...p,
-        floor: target.floor, // All cards remain on floor
+        floor: kept, // Only keep reorganized cards, confiscated ones are removed
         floorGroups: reorganizedGroups, // But groups are reorganized
+        confiscatedCards: leftover, // Track what was confiscated
         score: p.score - fine,
         stats: { ...p.stats, internalsRecv: p.stats.internalsRecv + 1 }
       };
@@ -215,9 +214,7 @@ export function applyInternalWithCards(
   
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);
-  if (leftover.length > 0) {
-    reorganizedGroups.push(leftover); // Add leftover as final group
-  }
+  // Don't add leftover cards - they are confiscated!
   
   newState.players = newState.players.map(p => {
     if (p.id === accuserId) {
@@ -231,8 +228,9 @@ export function applyInternalWithCards(
     if (p.id === targetId) {
       return {
         ...p,
-        floor: target.floor, // All cards remain on floor
+        floor: kept, // Only keep reorganized cards, confiscated ones are removed
         floorGroups: reorganizedGroups, // But groups are reorganized
+        confiscatedCards: leftover, // Track what was confiscated
         score: p.score - fine,
         stats: { ...p.stats, internalsRecv: p.stats.internalsRecv + 1 }
       };

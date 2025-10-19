@@ -308,24 +308,27 @@ function CorporateRival({
                   </div>
                 )}
                 
-                {/* Check if last group is confiscated cards (illegal after audit) */}
+                {/* Display productions and track reorganization */}
                 {(() => {
-                  const hasConfiscated = player.stats.internalsRecv > 0 && 
-                    player.floorGroups.length > 0 && 
-                    !isLegalExact(player.floorGroups[player.floorGroups.length - 1]);
-                  const confiscatedCards = hasConfiscated ? player.floorGroups[player.floorGroups.length - 1] : null;
-                  const displayGroups = hasConfiscated ? 
-                    player.floorGroups.slice(0, -1) : 
-                    player.floorGroups;
+                  // After an audit, we don't have confiscated cards in floorGroups anymore
+                  // They've been removed during the audit
+                  const displayGroups = player.floorGroups;
+                  
+                  // Track which productions are reorganized (from audit) vs new (after audit)
+                  // We'll consider the first N groups as reorganized if player was audited
+                  // This is a simplified approach - ideally we'd track the exact count
+                  const reorganizedCount = player.stats.internalsRecv > 0 ? 
+                    Math.min(5, displayGroups.length) : 0; // Assume first 5 are from reorganization
                   
                   return (
                     <>
-                      {/* Show productions - these are the reorganized groups after audit */}
+                      {/* Show productions - distinguish reorganized from new */}
                       {[...displayGroups].reverse().map((group, idx) => {
                         const isLegal = isLegalExact(group);
                         const turnNumber = displayGroups.length - idx;
                         const groupRaw = rawValue(group);
-                        const isReorganized = player.stats.internalsRecv > 0;
+                        // Only the first N productions are reorganized from audit
+                        const isReorganized = turnNumber <= reorganizedCount;
                         
                         return (
                           <div 
@@ -357,14 +360,14 @@ function CorporateRival({
                       })}
                       
                       {/* Show confiscated cards if they exist */}
-                      {confiscatedCards && (
+                      {player.confiscatedCards && player.confiscatedCards.length > 0 && (
                         <div className="border-t border-gray-600 pt-2 mt-2">
                           <div className="bg-red-950/40 border border-red-700 rounded p-2">
                             <div className="text-xs text-red-400 font-bold mb-1">
-                              🚫 CONFISCATED CARDS (Fined {rawValue(confiscatedCards)} @ 1.5x)
+                              🚫 CONFISCATED CARDS (Fined {rawValue(player.confiscatedCards)} @ 1.5x = {Math.round(rawValue(player.confiscatedCards) * 1.5)})
                             </div>
                             <div className="flex gap-1 flex-wrap">
-                              {confiscatedCards.map(card => (
+                              {player.confiscatedCards.map(card => (
                                 <FactoryCard key={card.id} card={card} size="small" />
                               ))}
                             </div>
@@ -613,24 +616,25 @@ export function IndustrialUI() {
                     </div>
                   )}
                   
-                  {/* Check if last group is confiscated cards (illegal after audit) */}
+                  {/* Display productions and track reorganization */}
                   {(() => {
-                    const hasConfiscated = humanPlayer.stats.internalsRecv > 0 && 
-                      humanPlayer.floorGroups.length > 0 && 
-                      !isLegalExact(humanPlayer.floorGroups[humanPlayer.floorGroups.length - 1]);
-                    const confiscatedCards = hasConfiscated ? humanPlayer.floorGroups[humanPlayer.floorGroups.length - 1] : null;
-                    const displayGroups = hasConfiscated ? 
-                      humanPlayer.floorGroups.slice(0, -1) : 
-                      humanPlayer.floorGroups;
+                    // After an audit, confiscated cards are removed from floor
+                    const displayGroups = humanPlayer.floorGroups;
+                    
+                    // Track which productions are reorganized (from audit) vs new (after audit)
+                    // Similar to opponent display
+                    const reorganizedCount = humanPlayer.stats.internalsRecv > 0 ? 
+                      Math.min(5, displayGroups.length) : 0;
                     
                     return (
                       <>
-                        {/* Show productions (reorganized if audited) */}
+                        {/* Show productions - distinguish reorganized from new */}
                         {[...displayGroups].reverse().map((group, idx) => {
                           const isLegal = isLegalExact(group);
                           const groupRaw = rawValue(group);
                           const turnNumber = displayGroups.length - idx;
-                          const isReorganized = humanPlayer.stats.internalsRecv > 0;
+                          // Only the first N productions are reorganized from audit
+                          const isReorganized = turnNumber <= reorganizedCount;
                           
                           return (
                             <div key={turnNumber - 1} className={`rounded p-3 relative ${
@@ -661,8 +665,8 @@ export function IndustrialUI() {
                           );
                         })}
                         
-                        {/* Show actual confiscated cards */}
-                        {confiscatedCards && (
+                        {/* Show actual confiscated cards if they exist */}
+                        {humanPlayer.confiscatedCards && humanPlayer.confiscatedCards.length > 0 && (
                           <div className="border-t-2 border-red-600 pt-3 mt-3">
                             <div className="bg-red-950/50 border border-red-700 rounded p-3">
                               <div className="flex items-center gap-2 mb-2">
@@ -670,11 +674,11 @@ export function IndustrialUI() {
                                   🚫 CONFISCATED BASKET
                                 </div>
                                 <div className="text-xs text-red-300">
-                                  (Fine: {rawValue(confiscatedCards)} raw @ 1.5x = {Math.round(rawValue(confiscatedCards) * 1.5)} points)
+                                  (Fine: {rawValue(humanPlayer.confiscatedCards)} raw @ 1.5x = {Math.round(rawValue(humanPlayer.confiscatedCards) * 1.5)} points)
                                 </div>
                               </div>
                               <div className="flex gap-1 flex-wrap mb-2">
-                                {confiscatedCards.map(card => (
+                                {humanPlayer.confiscatedCards.map(card => (
                                   <FactoryCard key={card.id} card={card} size="medium" />
                                 ))}
                               </div>

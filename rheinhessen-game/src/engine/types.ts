@@ -15,6 +15,7 @@ export interface PlayerState {
   hand: Card[];
   floor: Card[];
   floorGroups: Card[][]; // Track production groups
+  confiscatedCards?: Card[]; // Cards confiscated during last audit
   score: number;
   stats: {
     legal: number;

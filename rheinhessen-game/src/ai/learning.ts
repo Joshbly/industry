@@ -176,13 +176,14 @@ export class LearningAgent {
     loseGame: 0,           // No punishment for losing, just no win bonus
     avoidExternal: 5,      // Small bonus for dodging external
     causeExternal: -50,    // BIG penalty - this actually hurts you
-    successfulAudit: 30,   // Good tactical move (= 30 points worth)
+    successfulAudit: 60,   // HUGE audit bonus - audits are PROFITABLE!
     position2nd: 50,       // Good effort bonus
     position3rd: 10,       // Participation trophy
     position4th: 0,        // No punishment - removes fear!
     spike: -2,             // Minor penalty for audit track ticks
     cleanProduction: 3,    // Small bonus for legal plays
-    blockLeaderAudit: 50,  // Strategic bonus for targeting leader
+    blockLeaderAudit: 80,  // BIG strategic bonus for targeting leader
+    holdingAuditCards: 15, // Reward for keeping cheap trips for audits
     preventWin: 100,       // Important defensive play
     aggressiveBonus: 15,   // Reward for high-value illegal plays
     leadMaintenance: 0.5,  // Bonus per point ahead of 2nd place
@@ -589,21 +590,24 @@ export class LearningAgent {
       actions.push('play-dump');
     }
     
-    // Audit available based on hanging value calculation
-    if (features.hasValidAuditHand && features.maxHangingValue > -5) {
-      // Use hanging value to determine if audit is worth it
-      // Positive hanging value = profitable audit
-      // Small negative ok if strategic (blocking leader, etc)
+    // AGGRESSIVE AUDIT - Be much more willing to audit!
+    if (features.hasValidAuditHand) {
+      // Check if ANY opponent has crime worth hitting
+      const maxCrime = Math.max(features.opp1FloorCrime, features.opp2FloorCrime, features.opp3FloorCrime);
       
       // MALICIOUS CHECK: Is someone about to win?
       const leader = opponents.reduce((best, opp) => 
         opp.score > best.score ? opp : best, opponents[0]);
       const leaderNearWin = leader && leader.score >= 250;
       
-      const worthAudit = features.maxHangingValue > 0 || 
-                        (features.maxHangingValue > -10 && features.canBlockLeader) ||
-                        (features.auditProfitRatio > 0.8 && features.auditTrack >= 3) ||
-                        leaderNearWin; // ALWAYS try to audit if leader near win!
+      // Much more permissive audit conditions - almost ALWAYS audit if you can!
+      const worthAudit = maxCrime > 10 || // Anyone has decent crime
+                        features.maxHangingValue > -30 || // Even moderate losses OK
+                        features.canBlockLeader || // Can hit the leader
+                        features.auditTrack >= 3 || // Track is getting high
+                        leaderNearWin || // Someone near winning
+                        features.myAuditHandValue <= 18 || // Cheap trips - USE THEM!
+                        Math.random() < 0.3; // 30% random audit aggression
       
       if (worthAudit) {
         actions.push('audit-highest');
@@ -804,6 +808,16 @@ export class LearningAgent {
       if (lastPlayerTurn && lastPlayerTurn.action === 'pass' && pointsGained > 20) {
         // We passed last turn and now played a good hand!
         reward += this.rewards.handBuilding;
+      }
+    }
+    
+    // HOLDING AUDIT CARDS: Reward for keeping cheap trips
+    // This encourages saving audit ammunition instead of playing it for points
+    if (action === 'pass' || action === 'play-safe') {
+      const features = this.extractFeatures(newState, playerId);
+      if (features.hasValidAuditHand && features.myAuditHandValue <= 15) {
+        // Holding cheap trips (2s, 3s, 4s, 5s) for audit opportunities
+        reward += this.rewards.holdingAuditCards;
       }
     }
     

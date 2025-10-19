@@ -366,10 +366,13 @@ function CorporateRival({
                             <div className="text-xs text-red-400 font-bold mb-1">
                               🚫 CONFISCATED CARDS (Fined {rawValue(player.confiscatedCards)} @ 1.5x = {Math.round(rawValue(player.confiscatedCards) * 1.5)})
                             </div>
-                            <div className="flex gap-1 flex-wrap">
+                            <div className="flex gap-1 flex-wrap mb-1">
                               {player.confiscatedCards.map(card => (
                                 <FactoryCard key={card.id} card={card} size="small" />
                               ))}
+                            </div>
+                            <div className="text-[9px] text-gray-500 italic">
+                              Returned to bottom of deck
                             </div>
                           </div>
                         </div>
@@ -683,7 +686,7 @@ export function IndustrialUI() {
                                 ))}
                               </div>
                               <div className="text-xs text-gray-400">
-                                These illegal cards couldn't be reorganized into legal hands and were confiscated.
+                                These illegal cards couldn't be reorganized into legal hands. They were confiscated and placed at the bottom of the deck.
                               </div>
                             </div>
                           </div>

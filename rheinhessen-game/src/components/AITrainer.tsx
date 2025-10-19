@@ -940,13 +940,13 @@ export function AITrainer() {
                 <div className="text-sm text-gray-300 space-y-1">
                   <div>💰 <span className="text-green-400 font-bold">+1 per point</span> - POINTS = POWER!</div>
                   <div>🏆 <span className="text-yellow-400 font-bold">+300 for wins</span> - WIN AT ALL COSTS!</div>
-                  <div>💎 <span className="text-purple-400 font-bold">+25 MEGA HANDS</span> - Full house/Quads/Straight flush!</div>
+                  <div>🔥 <span className="text-red-500 font-bold">+60 AUDIT SUCCESS</span> - AUDITS ARE MONEY!</div>
+                  <div>🎯 <span className="text-red-400 font-bold">+80 AUDIT LEADER</span> - Cut them down!</div>
+                  <div>💣 <span className="text-orange-500 font-bold">+15 HOLDING TRIPS</span> - Save audit ammo!</div>
+                  <div>💎 <span className="text-purple-400 font-bold">+25 MEGA HANDS</span> - Full house/Quads!</div>
                   <div>⚔️ <span className="text-orange-400">+15 aggressive play</span> - Big illegal scores!</div>
-                  <div>🎲 <span className="text-blue-400">+8 strategic pass</span> - Build that monster hand!</div>
+                  <div>🎲 <span className="text-blue-400">+8 strategic pass</span> - Build monsters!</div>
                   <div>🔨 <span className="text-cyan-400">+12 hand building</span> - Pass then SMASH!</div>
-                  <div>👑 <span className="text-blue-400">+0.5 per lead point</span> - Dominate!</div>
-                  <div>🎯 <span className="text-gray-300">+30 audit</span> - Tactical strikes</div>
-                  <div>⚡ <span className="text-green-400">NO FEAR</span> - No losing punishment!</div>
                   <div>⚠️ <span className="text-red-400">-50 external</span> - Only real penalty</div>
                 </div>
               </div>
@@ -954,11 +954,11 @@ export function AITrainer() {
               {/* Instructions */}
               <div className="text-xs text-gray-400 border-t border-gray-700 pt-3">
                 <p className="text-orange-400 font-bold mb-1">🔥 SAVAGE WILDMAN PHILOSOPHY:</p>
-                <p>• Score aggressively - Every point is +1 reward!</p>
+                <p>• AUDIT AGGRESSIVELY - Hold cheap trips, strike often!</p>
+                <p>• Score relentlessly - Every point is +1 reward!</p>
                 <p>• Build MEGA hands - Pass with trash, build monsters!</p>
                 <p>• Take risks - No punishment for losing!</p>
-                <p>• Maintain dominance - Lead bonus rewards staying ahead!</p>
-                <p>• Strategic audits - Not constant, but devastating!</p>
+                <p>• Hunt the leader - Massive bonus for audit attacks!</p>
                 <p className="mt-2 text-yellow-400">
                   💪 Long-term thinking (γ=0.97) + Fast learning (α=0.15) = UNSTOPPABLE
                 </p>

@@ -140,6 +140,9 @@ export function applyInternal(
   const { kept, leftover } = reorganizeGreedy(target.floor);
   const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
   
+  // Add confiscated cards to bottom of deck (they go back into circulation immediately)
+  newState.deck = [...newState.deck, ...leftover];
+  
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);
   // Don't add leftover cards - they are confiscated!
@@ -211,6 +214,9 @@ export function applyInternalWithCards(
   // Reorganize target's floor
   const { kept, leftover } = reorganizeGreedy(target.floor);
   const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
+  
+  // Add confiscated cards to bottom of deck (they go back into circulation immediately)
+  newState.deck = [...newState.deck, ...leftover];
   
   // Create new floor groups from reorganization
   const reorganizedGroups = extractLegalGroups(kept);

@@ -86,6 +86,14 @@ interface StateFeatures {
   totalHangingValue: number;  // Sum of all positive hanging values
   auditProfitRatio: number;   // Max hanging value / my audit hand cost
   
+  // Trips building & opportunity cost (6 new features)
+  closestToTrips: number;     // 0=have trips, 1=need 1 card, 2=need 2 cards
+  numPairsForTrips: number;   // How many pairs could become trips
+  tripsPlayValue: number;     // Value if played as legal hand
+  tripsAuditValue: number;    // Expected value if saved for audit
+  tripsDelta: number;         // Audit value - play value (opportunity cost)
+  handBuildPotential: number; // 0-1 score of hand improvement potential
+  
   // Game phase (6 features)
   turnNumber: number;
   deckRemaining: number;
@@ -140,9 +148,9 @@ export interface AgentConfig {
 // Q-learning agent with OPTIMIZED memory management
 export class LearningAgent {
   private qTable: Map<string, Map<Action, number>> = new Map();
-  private stateAccessOrder: Map<string, number> = new Map(); // LRU tracking
+  private stateAccessOrder: Map<string, number> = new Map(); // For future optimization
   private accessCounter = 0;
-  private readonly MAX_STATES = 20000; // Higher cap with better discretization
+  // No size limits - we support unlimited states for deep learning
   
   // Feature importance tracking
   private featureRewardCorrelation = new Map<string, number>();
@@ -186,7 +194,7 @@ export class LearningAgent {
   private countedGames = new Set<string>();
   private currentGameId: string | null = null;
 
-  // Reward weights - WARZONE SYSTEM (Only winning matters)
+  // Reward weights - WARZONE SYSTEM with ANTI-LEADER COLLUSION
   private rewards = {
     // WINNING IS EVERYTHING
     winGame: 1000,         // MASSIVE reward for victory
@@ -201,10 +209,18 @@ export class LearningAgent {
     pointGain: 0.5,        // Small reward to encourage scoring
     leadMaintenance: 2.0,  // Per point ahead - defend your lead
     
-    // Tactical rewards (discover what works)
-    eliminateLeader: 150,  // Destroy the winner
+    // ANTI-LEADER COLLUSION (progressive urgency)
+    eliminateLeader: 150,  // Base audit of leader
+    collusionAudit250: 250, // Audit leader at 250+ points
+    collusionAudit275: 400, // Audit leader at 275+ points  
+    collusionAudit290: 600, // EMERGENCY: Audit leader at 290+
+    preventWin: 300,       // Stop imminent victory (increased)
     crushWeakest: 50,      // Exploit the weak
     causeExternal: -100,   // Don't self-destruct
+    
+    // COLLUSION COORDINATION
+    followupAudit: 100,    // Audit someone recently audited
+    pileOn: 150,           // Multiple AIs audit same target
     
     // Discovery bonuses
     unexploredAction: 20,  // Try new things
@@ -212,7 +228,6 @@ export class LearningAgent {
     
     // No preset strategy rewards - let them figure it out
     loseGame: -500,        // Losing is failure
-    preventWin: 200,       // Stop others from winning
     successfulAudit: 0,    // Let them learn if audits help
     cleanProduction: 0,    // Let them discover if legal is good
     spike: 0,              // Let them learn about risk
@@ -229,21 +244,21 @@ export class LearningAgent {
   constructor(config: AgentConfig = {}) {
     // Apply configuration
     this.epsilon = config.epsilon ?? 0.95;    // Start at 95% exploration (nearly pure random)
-    this.alpha = config.alpha ?? 0.25;        // Start with fast learning, will decay
+    this.alpha = config.alpha ?? 0.15;        // Conservative 15% max learning rate
     this.gamma = config.gamma ?? 0.95;        // Discount factor
     this.name = config.name ?? 'Warzone';
     
-    // In WARZONE mode, start with maximum exploration and fast learning
+    // In WARZONE mode, start with maximum exploration and controlled learning
     const isWarzone = config.name?.includes('Warzone');
     if (isWarzone) {
       // Start nearly pure random, will decay based on performance
       this.epsilon = 0.95;  // 95% random initially
-      this.alpha = 0.25;    // Start fast, will decay dynamically
+      this.alpha = 0.15;    // 15% max - requires 7+ consistent experiences to change strategy
       this.gamma = 0.95;    // Balanced horizon
     } else if (config.rewardWeights) {
-      // Legacy persona mode - still start high but decay faster
+      // Legacy persona mode - slightly lower starting point
       this.epsilon = 0.8;   // 80% random initially for legacy
-      this.alpha = 0.20;    // Slightly slower initial learning for legacy
+      this.alpha = 0.12;    // 12% initial learning for legacy (more conservative)
       
       this.rewards.pointGain = config.rewardWeights.pointGain ?? this.rewards.pointGain;
       this.rewards.winGame = config.rewardWeights.winBonus ?? this.rewards.winGame;
@@ -324,8 +339,13 @@ export class LearningAgent {
     const pointsAheadOfLast = Math.max(0, player.score - last.score);
     const myFloorCardCount = player.floor.length;
     
-    // Get individual opponent data
+    // Get individual opponent data (ensuring all 3 opponents including human)
     const [opp1, opp2, opp3] = opponents;
+    
+    // Verify we have all opponents (should be 3 in a 4-player game)
+    if (opponents.length !== 3) {
+      console.warn(`Expected 3 opponents for player ${playerId}, got ${opponents.length}`);
+    }
     
     // Get recent actions from turn history
     const getRecentAction = (pid: number): number => {
@@ -422,12 +442,20 @@ export class LearningAgent {
       ? calculateHangingValue(opp3.floor, auditHandCost) 
       : 0;
     
-    // Find best audit target
+    // Find best audit target (including the human player)
     const hangingValues = [
-      { id: opp1?.id || -1, value: opp1HangingValue },
-      { id: opp2?.id || -1, value: opp2HangingValue },
-      { id: opp3?.id || -1, value: opp3HangingValue }
+      { id: opp1?.id ?? -1, value: opp1HangingValue },
+      { id: opp2?.id ?? -1, value: opp2HangingValue },
+      { id: opp3?.id ?? -1, value: opp3HangingValue }
     ].filter(hv => hv.id >= 0);
+    
+    // Debug: Log when considering auditing the human (only occasionally to avoid spam)
+    if (playerId !== 0 && hangingValues.some(hv => hv.id === 0)) {
+      const humanHanging = hangingValues.find(hv => hv.id === 0);
+      if (humanHanging && humanHanging.value > 0 && Math.random() < 0.1) {
+        console.log(`🎯 AI ${playerId} can audit human for +${humanHanging.value} profit`);
+      }
+    }
     
     const bestAudit = hangingValues.reduce((best, current) => 
       current.value > best.value ? current : best,
@@ -440,6 +468,49 @@ export class LearningAgent {
                              Math.max(0, opp2HangingValue) + 
                              Math.max(0, opp3HangingValue);
     const auditProfitRatio = auditHandCost > 0 ? maxHangingValue / auditHandCost : 0;
+    
+    // Calculate trips building & opportunity cost features
+    let closestToTrips = 2; // Default: need 2 more cards
+    let numPairsForTrips = 0;
+    let tripsPlayValue = 0;
+    let tripsAuditValue = 0;
+    
+    // Check how close to trips
+    if (hasTripsPlus) {
+      closestToTrips = 0; // Already have trips
+      // If we have trips/quads as legal hand, get its play value
+      if (legal && ['trips', 'quads', 'full-house'].includes(getHandType(legal.cards))) {
+        tripsPlayValue = calculateTaxedValue(legal.raw);
+      }
+    } else if (numPairs > 0) {
+      closestToTrips = 1; // One card away (have pairs)
+      numPairsForTrips = numPairs; // Each pair could become trips
+    }
+    
+    // Calculate expected audit value (average of positive hanging values)
+    if (hasValidAuditHand || closestToTrips <= 1) {
+      const positiveHangings = [opp1HangingValue, opp2HangingValue, opp3HangingValue]
+        .filter(v => v > 0);
+      if (positiveHangings.length > 0) {
+        tripsAuditValue = positiveHangings.reduce((sum, v) => sum + v, 0) / positiveHangings.length;
+      }
+    }
+    
+    // Calculate opportunity cost (positive means audit is better, negative means play is better)
+    const tripsDelta = tripsAuditValue - tripsPlayValue;
+    
+    // Calculate hand building potential (0-1 scale)
+    let handBuildPotential = 0;
+    if (player.hand.length < 7) { // Can still draw
+      // Higher potential if we have pairs (could become trips)
+      handBuildPotential += numPairs * 0.3;
+      // Higher potential if we're close to straights/flushes
+      if (numStraightDraws <= 2) handBuildPotential += 0.2;
+      if (numFlushDraws <= 2) handBuildPotential += 0.2;
+      // Higher potential with more draws remaining
+      handBuildPotential += (7 - player.hand.length) * 0.1;
+      handBuildPotential = Math.min(1, handBuildPotential); // Cap at 1
+    }
     
     return {
       // Hand composition (11 features)
@@ -521,6 +592,14 @@ export class LearningAgent {
       totalHangingValue,
       auditProfitRatio,
       
+      // Trips building & opportunity cost (6 features)
+      closestToTrips,
+      numPairsForTrips,
+      tripsPlayValue,
+      tripsAuditValue,
+      tripsDelta,
+      handBuildPotential,
+      
       // Game phase (6 features)
       turnNumber,
       deckRemaining,
@@ -578,38 +657,38 @@ export class LearningAgent {
     if (features.auditTrack >= 3 && features.opp3FloorCrime > 27) playersNearExternal++;
     
     return [
-      // POSITION & SCORING (4) - Core win condition
-      d(features.myScore, [100, 200]),                      // Coarser: early/mid/late
+      // POSITION & SCORING (4) - Core win condition with more granularity
+      d(features.myScore, [50, 100, 150, 200, 250]),        // 6 buckets: very detailed progression
       features.myScoreRank,                                 // Exact 1-4
-      b(features.pointsBehindLeader > 30),                 // Binary: far behind?
-      b(leaderScore >= 250),                               // Binary: someone near win
+      d(features.pointsBehindLeader, [10, 20, 30, 50, 75]), // 6 buckets: nuanced gaps
+      d(leaderScore, [150, 200, 225, 250, 275, 290]),       // 7 buckets: detailed endgame phases
       
-      // HAND QUALITY (5) - What can we play?
+      // HAND QUALITY & TRIPS (6) - What can we play?
       b(features.hasLegal),                                 // Can play legal
-      b(features.bestLegalRaw > 30),                       // Strong legal hand
-      b(features.hasTripsPlus),                            // Can audit
-      b(features.bestSafeRaw >= 20),                       // Good safe illegal
-      b(canPlayDangerous),                                 // NEW: 27+ option
+      d(features.bestLegalRaw, [15, 25, 35, 45]),          // 5 buckets: legal hand strength
+      features.closestToTrips,                             // 0=have, 1=close, 2=far
+      d(features.tripsDelta, [-20, -10, 0, 10, 20]),       // 6 buckets: opportunity cost spectrum
+      d(features.bestSafeRaw, [15, 20, 23, 26]),           // 5 buckets: safe illegal zones
+      b(canPlayDangerous),                                 // 27+ option
       
-      // AUDIT DYNAMICS (6) - Risk/reward balance
+      // AUDIT DYNAMICS (5) - Risk/reward balance with detail
       Math.min(features.auditTrack, 4),                    // Track position
       b(features.wouldTriggerExternal),                    // Would we trigger?
       b(features.hasValidAuditHand),                       // Can audit now?
-      d(auditROI, [-1, 0, 1]),                            // NEW: Profit ratio
-      Math.min(playersNearExternal, 3),                    // NEW: External risk
-      d(features.myFloorCrime, [30]),                      // Binary: vulnerable?
+      d(auditROI, [-2, -1, -0.5, 0, 0.5, 1, 2]),          // 8 buckets: detailed ROI
+      d(features.myFloorCrime, [10, 20, 30, 40, 50]),      // 6 buckets: vulnerability levels
       
-      // OPPONENT TRACKING (7) - Who to target
-      d(features.opp1Score, [100, 200]),                    // Score ranges
-      d(features.opp1FloorCrime, [15, 30, 50]),            // Crime levels
-      d(features.opp2Score, [100, 200]),
-      d(features.opp2FloorCrime, [15, 30, 50]),
-      d(features.opp3Score, [100, 200]),
-      d(features.opp3FloorCrime, [15, 30, 50]),
+      // OPPONENT TRACKING (7) - Who to target with granular data
+      d(features.opp1Score, [50, 100, 150, 200, 250]),      // 6 buckets per opponent
+      d(features.opp1FloorCrime, [10, 20, 30, 40, 50, 60]), // 7 crime buckets
+      d(features.opp2Score, [50, 100, 150, 200, 250]),
+      d(features.opp2FloorCrime, [10, 20, 30, 40, 50, 60]),
+      d(features.opp3Score, [50, 100, 150, 200, 250]),
+      d(features.opp3FloorCrime, [10, 20, 30, 40, 50, 60]),
       features.bestAuditTarget >= 0 ? features.bestAuditTarget : -1,
       
       // GAME CONTEXT (3) - Phase awareness
-      features.gamePhase,                                  // 0-3
+      features.gamePhase,                                  // 0-3 already granular
       b(features.isEndgame),                              // Critical phase
       b(features.canBlockLeader)                          // Can stop winner
     ].join('-');
@@ -647,28 +726,70 @@ export class LearningAgent {
       const roi = features.myAuditHandValue > 0 ? 
                   features.maxHangingValue / features.myAuditHandValue : 0;
       
-      // Leader detection
+      // Leader detection with PROGRESSIVE URGENCY
       const leader = opponents.reduce((best, opp) => 
         opp.score > best.score ? opp : best, opponents[0]);
-      const leaderNearWin = leader && leader.score >= 250;
+      const leaderScore = leader ? leader.score : 0;
       
-      // Make audit available in many situations - let Q-learning decide value
-      const auditPossible = maxCrime > 0 ||                     // Anyone has crime
-                           roi > -2 ||                           // Not terrible loss
-                           features.canBlockLeader ||            // Can target leader
-                           leaderNearWin ||                      // Emergency situation
-                           features.auditTrack >= 3;            // High track state
+      // COLLUSION TRIGGER POINTS
+      const emergencyMode = leaderScore >= 290;   // STOP THEM AT ALL COSTS
+      const panicMode = leaderScore >= 275;       // HIGH URGENCY
+      const threatMode = leaderScore >= 250;      // MEDIUM URGENCY
+      const watchMode = leaderScore >= 225;       // START WATCHING
       
-      if (auditPossible) {
+      // PROGRESSIVE AUDIT URGENCY - More likely to audit as leader approaches victory
+      let auditPossible = false;
+      
+      if (emergencyMode) {
+        // EMERGENCY: Always consider audit if we have the cards
+        auditPossible = features.hasValidAuditHand;
+        if (auditPossible && Math.random() < 0.1) {
+          console.log(`🚨 EMERGENCY MODE: Leader at ${leaderScore}! ${this.name} considering audit!`);
+        }
+      } else if (panicMode) {
+        // PANIC: Very low threshold but still strategic
+        auditPossible = features.hasValidAuditHand && (
+          (maxCrime > 5 && features.bestAuditTarget === leader.id) || // Target leader with ANY crime
+          (roi > -2 && features.bestAuditTarget === leader.id) ||     // Accept losses to stop leader
+          (maxCrime > 15 && roi > -3)                                 // Or significant crime even at loss
+        );
+      } else if (threatMode) {
+        // THREAT: Lower threshold for strategic auditing
+        auditPossible = features.hasValidAuditHand && (
+          (maxCrime > 10 && roi > -1.5) ||        // Some crime with acceptable loss
+          (features.canBlockLeader && roi > -2) || // Block leader even at moderate loss
+          (roi > -0.5)                             // Near break-even audits
+        );
+      } else if (watchMode) {
+        // WATCH: Starting to monitor, but still require meaningful conditions
+        auditPossible = (maxCrime > 15 && roi > -1) ||   // Decent crime with acceptable ROI
+                       (roi > 0) ||                       // At least break-even
+                       (features.auditTrack >= 4 && maxCrime > 10); // Very high track with some crime
+      } else {
+        // Normal conditions - require strategic reasoning for audits
+        auditPossible = (maxCrime >= 20 && roi > -1) ||  // Significant crime AND decent ROI
+                       (roi > 0.5) ||                     // Profitable audit
+                       (features.canBlockLeader && maxCrime > 10); // Can hurt leader with some crime
+        // Removed: random audits just because track is high or minimal crime exists
+      }
+      
+      if (auditPossible && features.hasValidAuditHand) {
         actions.push('audit-highest');
+        
+        // Log collusion mindset occasionally
+        if (threatMode && Math.random() < 0.05) {
+          console.log(`⚔️ ${this.name} ready to collude: Leader at ${leaderScore}, Audit available!`);
+        }
       }
     }
     
-    // Pass - strategic when hand is weak or building
+    // Pass - strategic when hand is weak, building trips, or has potential
     const weakHand = player.hand.length <= 4 && !features.hasLegal;
-    const buildingHand = features.numPairs === 1 && player.hand.length < 8;
+    const buildingTrips = features.closestToTrips === 1 && features.tripsDelta > 10; // Close to trips with good audit value
+    const highPotential = features.handBuildPotential > 0.5 && player.hand.length < 7; // High potential to improve
     
-    if (weakHand || buildingHand || (!features.hasLegal && features.bestSafeRaw < 15)) {
+    // Make pass available as an option - let Q-learning decide when it's best
+    if (weakHand || buildingTrips || highPotential || (!features.hasLegal && features.bestSafeRaw < 15)) {
       actions.push('pass');
     }
     
@@ -693,25 +814,10 @@ export class LearningAgent {
     return actionValues.get(action) || 0;
   }
 
-  // Update Q-value with EFFICIENT LRU eviction
+  // Update Q-value - no size limits for deep learning
   private updateQ(stateKey: string, action: Action, value: number) {
-    // Track access for LRU
+    // Track access order (for potential future optimization)
     this.stateAccessOrder.set(stateKey, this.accessCounter++);
-    
-    // Enforce size limit with batch LRU eviction for efficiency
-    if (!this.qTable.has(stateKey) && this.qTable.size >= this.MAX_STATES) {
-      // Batch evict: Remove oldest 5% when at capacity
-      const evictCount = Math.floor(this.MAX_STATES * 0.05); // Evict 1000 states
-      const sortedStates = Array.from(this.stateAccessOrder.entries())
-        .sort((a, b) => a[1] - b[1])
-        .slice(0, evictCount);
-      
-      // Batch delete for efficiency
-      for (const [key] of sortedStates) {
-        this.qTable.delete(key);
-        this.stateAccessOrder.delete(key);
-      }
-    }
     
     if (!this.qTable.has(stateKey)) {
       this.qTable.set(stateKey, new Map());
@@ -816,6 +922,11 @@ export class LearningAgent {
         const features = this.extractFeatures(state, playerId);
         const targetId = features.bestAuditTarget;
         
+        // Log when AI audits the human
+        if (targetId === 0) {
+          console.log(`🚨 AI ${playerId} (${this.name}) is auditing the human player!`);
+        }
+        
         // Fallback to highest crime if no best target identified
         if (targetId < 0) {
           let fallbackId = -1;
@@ -829,6 +940,10 @@ export class LearningAgent {
             }
           }
           if (fallbackId >= 0) {
+            // Log fallback audit of human
+            if (fallbackId === 0) {
+              console.log(`🚨 AI ${playerId} (${this.name}) is auditing human (fallback)!`);
+            }
             return { doInternal: true, targetId: fallbackId, production: { type: 'pass' } };
           }
           return { doInternal: false, production: { type: 'pass' } };
@@ -872,22 +987,59 @@ export class LearningAgent {
       reward += leadMargin * this.rewards.leadMaintenance;
     }
     
-    // DESTRUCTION REWARDS: Eliminate threats
+    // ANTI-LEADER COLLUSION: Progressive urgency to stop winners
     if (action === 'audit-highest') {
       const prevLeader = [...prevState.players].sort((a, b) => b.score - a.score)[0];
       const newLeader = [...newState.players].sort((a, b) => b.score - a.score)[0];
       
-      // Did we knock down the leader?
-      if (prevLeader.id !== playerId && prevLeader.score > newLeader.score) {
+      // Did we audit the leader?
+      if (prevFeatures.bestAuditTarget === prevLeader.id && prevLeader.id !== playerId) {
+        // Base reward for auditing leader
         reward += this.rewards.eliminateLeader;
         
-        // EXTRA: If we prevented imminent win
-        if (prevLeader.score >= 250) {
+        // PROGRESSIVE COLLUSION - Exponentially higher rewards as leader approaches 300
+        if (prevLeader.score >= 290) {
+          reward += this.rewards.collusionAudit290; // +600 EMERGENCY
+          if (Math.random() < 0.2) { // Log occasionally
+            console.log(`🚨 EMERGENCY COLLUSION: ${this.name} attacked leader at ${prevLeader.score}!`);
+          }
+        } else if (prevLeader.score >= 275) {
+          reward += this.rewards.collusionAudit275; // +400 HIGH URGENCY
+        } else if (prevLeader.score >= 250) {
+          reward += this.rewards.collusionAudit250; // +250 MEDIUM URGENCY
+        }
+        
+        // Massive bonus if we actually stopped them from winning
+        const scoreDrop = prevLeader.score - newLeader.score;
+        if (scoreDrop > 15 && prevLeader.score >= 270) {
           reward += this.rewards.preventWin;
+          if (Math.random() < 0.3) { // Log occasionally
+            console.log(`💀 ${this.name} cut leader down by ${scoreDrop} points!`);
+          }
         }
       }
       
-      // Did we crush the weakest? (exploitation)
+      // COLLUSION COORDINATION - Reward gang tactics
+      // Check if other AIs also recently audited (simplified check)
+      const recentAudits = this.turnHistory.slice(-3).filter(h => 
+        h.action === 'audit' &&  // Use the correct action type
+        h.playerId !== playerId
+      );
+      
+      // If we're auditing the leader and others did too recently
+      if (recentAudits.length > 0 && prevFeatures.bestAuditTarget === prevLeader.id) {
+        reward += this.rewards.followupAudit; // +100 for coordination
+        
+        // Multiple AIs attacking together
+        if (recentAudits.length >= 2) {
+          reward += this.rewards.pileOn; // +150 for gang attack
+          if (Math.random() < 0.2) {
+            console.log(`⚔️ PILE ON! ${this.name} joins the assault on leader!`);
+          }
+        }
+      }
+      
+      // Still reward crushing the weakest (but less important)
       const weakest = [...prevState.players].sort((a, b) => a.score - b.score)[0];
       if (prevFeatures.bestAuditTarget === weakest.id && weakest.id !== playerId) {
         reward += this.rewards.crushWeakest;
@@ -1053,9 +1205,9 @@ export class LearningAgent {
       // Interpolate between breakthrough epsilon and normal epsilon
       this.epsilon = this.stats.breakthroughEpsilon * (1 - decayProgress) + normalEpsilon * decayProgress;
       
-      // Also boost alpha during breakthrough
+      // Modest learning boost during breakthrough (cap at 15%)
       const normalAlpha = this.calculateNormalAlpha(episodesCompleted, isWarzone, performanceFactor);
-      this.alpha = Math.min(0.3, normalAlpha * (1 + (1 - decayProgress))); // Up to 2x during breakthrough
+      this.alpha = Math.min(0.15, normalAlpha * (1 + 0.3 * (1 - decayProgress))); // Up to 30% boost, capped at 15%
       
       // Decrement breakthrough counter
       this.stats.breakthroughActive--;
@@ -1088,7 +1240,7 @@ export class LearningAgent {
     const adjustedExplorationDecay = Math.pow(baseExplorationDecay, performanceFactor);
     
     const startEpsilon = isWarzone ? 0.95 : 0.8;
-    const minEpsilon = isWarzone ? 0.10 : 0.05;
+    const minEpsilon = 0.03; // 3% minimum exploration for both modes
     
     return Math.max(
       minEpsilon,
@@ -1097,23 +1249,32 @@ export class LearningAgent {
   }
   
   private calculateNormalAlpha(episodesCompleted: number, isWarzone: boolean, performanceFactor: number): number {
-    const baseLearningDecay = 0.999;
-    const adjustedLearningDecay = Math.pow(baseLearningDecay, performanceFactor * 0.7);
+    // Slower decay for more stable learning
+    const baseLearningDecay = 0.9995;  // Even slower decay since we start lower
+    const adjustedLearningDecay = Math.pow(baseLearningDecay, performanceFactor * 0.5); // Less sensitive to performance
     
-    const startAlpha = isWarzone ? 0.25 : 0.20;
-    const minAlpha = 0.05;
+    const startAlpha = isWarzone ? 0.15 : 0.12;  // Conservative starting points
+    const minAlpha = 0.03;   // 3% minimum - very slow final learning
+    const maxAlpha = 0.15;   // 15% maximum - prevents instability
     
-    const alphaPhaseFactor = Math.min(episodesCompleted / 500, 1.0);
+    // Reaches minimum after ~1000 episodes (was 500)
+    const alphaPhaseFactor = Math.min(episodesCompleted / 1000, 1.0);
     
-    return Math.max(
-      minAlpha,
-      startAlpha * Math.pow(adjustedLearningDecay, episodesCompleted * alphaPhaseFactor)
-    );
+    const calculatedAlpha = startAlpha * Math.pow(adjustedLearningDecay, episodesCompleted * alphaPhaseFactor);
+    
+    // Clamp between min and max
+    return Math.max(minAlpha, Math.min(maxAlpha, calculatedAlpha));
   }
   
   // STRATEGY 1: BREAKTHROUGH MODE - Escape local minima
   private detectPlateau(episodesCompleted: number) {
     if (episodesCompleted < 50) return; // Need baseline performance
+    
+    // ONLY consider breakthroughs when exploration is already low (mature agent)
+    if (this.epsilon > 0.10) {
+      // Still exploring naturally, don't disrupt learning
+      return;
+    }
     
     // Check if win rate improved
     const currentWinRate = this.stats.winRate;
@@ -1127,7 +1288,7 @@ export class LearningAgent {
       this.stats.plateauLength = episodesCompleted - this.stats.lastImprovement;
     }
     
-    // BREAKTHROUGH TRIGGER: No improvement for 100+ episodes
+    // BREAKTHROUGH TRIGGER: No improvement for 100+ episodes AND exploration is low
     const PLATEAU_THRESHOLD = 100;
     const MIN_EPISODES_BETWEEN_BREAKTHROUGHS = 50;
     
@@ -1135,6 +1296,7 @@ export class LearningAgent {
         episodesCompleted - this.stats.breakthroughCount * MIN_EPISODES_BETWEEN_BREAKTHROUGHS > 
         MIN_EPISODES_BETWEEN_BREAKTHROUGHS) {
       
+      console.log(`   Current exploration: ${(this.epsilon * 100).toFixed(1)}% - low enough for breakthrough`);
       this.triggerBreakthrough();
     }
   }
@@ -1143,21 +1305,23 @@ export class LearningAgent {
     console.log(`🚀 BREAKTHROUGH MODE ACTIVATED for ${this.name}!`);
     console.log(`   Plateau detected: ${this.stats.plateauLength} episodes without improvement`);
     console.log(`   Current win rate: ${(this.stats.winRate * 100).toFixed(1)}%`);
+    console.log(`   Agent is mature (exploration: ${(this.epsilon * 100).toFixed(1)}%)`);
     
-    // AGGRESSIVE EXPLORATION SPIKE
+    // TARGETED EXPLORATION SPIKE (less aggressive for mature agents)
     const oldEpsilon = this.epsilon;
-    const breakthroughTarget = Math.min(0.8, Math.max(this.epsilon * 2.5, 0.1)); // 2.5x but at least 10%
+    // For mature agents (≤10% exploration), spike to 30-50% range
+    const breakthroughTarget = Math.min(0.5, Math.max(this.epsilon * 5, 0.3)); // 5x current, between 30-50%
     
     // Store breakthrough state
-    this.stats.breakthroughActive = 70; // Decay over 70 episodes
+    this.stats.breakthroughActive = 50; // Decay over 50 episodes for mature agents
     this.stats.breakthroughEpsilon = breakthroughTarget;
     
     // Immediately apply breakthrough
     this.epsilon = breakthroughTarget;
     
-    // LEARNING RATE BOOST to quickly capture new discoveries
+    // Modest learning rate boost to capture discoveries without instability
     const oldAlpha = this.alpha;
-    this.alpha = Math.min(0.25, this.alpha * 1.5); // 1.5x learning rate, cap at 25%
+    this.alpha = Math.min(0.15, this.alpha * 1.3); // 30% boost, hard cap at 15%
     
     console.log(`   Exploration: ${(oldEpsilon * 100).toFixed(1)}% → ${(this.epsilon * 100).toFixed(1)}%`);
     console.log(`   Learning: ${(oldAlpha * 100).toFixed(1)}% → ${(this.alpha * 100).toFixed(1)}%`);
@@ -1204,9 +1368,9 @@ export class LearningAgent {
     
     console.log(`   Preserved ${preserved.size} high-value states from ${this.qTable.size}`);
     
-    // RESET TO AGGRESSIVE LEARNING
-    this.epsilon = 0.7; // High exploration to rediscover
-    this.alpha = 0.3;   // Fast learning from stronger opponents
+    // RESET WITH CONTROLLED LEARNING
+    this.epsilon = 0.6;  // High exploration to rediscover (slightly lower than before)
+    this.alpha = 0.15;   // Maximum 15% learning - stable even after extinction
     
     // Reset plateau and breakthrough tracking
     this.stats.plateauLength = 0;
@@ -1214,7 +1378,7 @@ export class LearningAgent {
     this.stats.breakthroughActive = 0; // Clear any active breakthrough
     this.stats.breakthroughEpsilon = 0;
     
-    console.log(`   Reborn with 70% exploration, 30% learning rate`);
+    console.log(`   Reborn with 60% exploration, 15% learning rate`);
   }
   
   private getTopValueStates(count: number): string[] {
@@ -1344,49 +1508,63 @@ export class LearningAgent {
       // Save to agent-specific key
       const storageKey = `rheinhessen-ai-learning-${this.name}`;
       
-      // Check size before saving
+      // Just save it - no size limits!
       const dataStr = JSON.stringify(data);
       const sizeMB = dataStr.length / (1024 * 1024);
+      console.log(`Saving ${this.name}: ${sizeMB.toFixed(2)}MB, ${this.qTable.size} states`);
       
-      if (sizeMB > 2) {
-        console.warn(`${this.name} data is ${sizeMB.toFixed(2)}MB - consider reducing Q-table size`);
-        // If too large, only keep most valuable states
-        if (sizeMB > 3 && this.qTable.size > 10000) {
-          console.log('Auto-pruning Q-table to save space...');
-          const topStates = this.getTopValueStates(10000);
-          const newQTable = new Map<string, Map<Action, number>>();
-          for (const state of topStates) {
-            if (this.qTable.has(state)) {
-              newQTable.set(state, this.qTable.get(state)!);
-            }
-          }
-          this.qTable = newQTable;
-          // Try again with smaller table
-          const smallerData = this.exportKnowledge();
-          localStorage.setItem(storageKey, JSON.stringify(smallerData));
-          console.log(`Pruned to ${this.qTable.size} states`);
-          return;
-        }
+      // Try localStorage first
+      try {
+        localStorage.setItem(storageKey, dataStr);
+      } catch (quotaError) {
+        // If localStorage fails, we'll handle it below
+        throw quotaError;
       }
-      
-      localStorage.setItem(storageKey, dataStr);
     } catch (e: any) {
       if (e.name === 'QuotaExceededError') {
-        console.error('Storage quota exceeded! Clearing old data...');
-        // Try to clear old/unused AI data
+        console.error('Storage quota exceeded - Creating downloadable backup!');
+        
+        // Export the full data
+        const data = this.exportKnowledge();
+        const dataStr = JSON.stringify(data);
+        const sizeMB = dataStr.length / (1024 * 1024);
+        
+        // Create a downloadable file
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${this.name}_training_${Date.now()}.json`;
+        
+        console.log(`📥 Downloading ${this.name} training data as file...`);
+        console.log(`📊 File size: ${sizeMB.toFixed(2)}MB with ${this.qTable.size} states`);
+        console.log(`💡 Import this file later using the Import Batch feature`);
+        
+        // Auto-download the file
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        // Clear ONLY other agents' data to make some room
         for (let key in localStorage) {
           if (key.startsWith('rheinhessen-ai-learning-') && !key.includes(this.name)) {
             localStorage.removeItem(key);
-            console.log(`Cleared old data: ${key}`);
+            console.log(`Cleared other agent: ${key}`);
           }
         }
-        // Try once more
+        
+        // Try to save a minimal version at least
         try {
-          const data = this.exportKnowledge();
-          const storageKey = `rheinhessen-ai-learning-${this.name}`;
-          localStorage.setItem(storageKey, JSON.stringify(data));
+          const minimalData = {
+            ...data,
+            qTable: {} // Save everything except the huge Q-table
+          };
+          const storageKey = `rheinhessen-ai-learning-${this.name}-meta`;
+          localStorage.setItem(storageKey, JSON.stringify(minimalData));
+          console.log('Saved metadata to localStorage, full data in downloaded file');
         } catch (e2) {
-          console.error('Still failed after cleanup:', e2);
+          console.log('Could not save even metadata, use the downloaded file');
         }
       } else {
         console.error('Failed to save learning data:', e);
@@ -1489,7 +1667,7 @@ export class LearningAgent {
     // Reset to appropriate starting values based on type
     const isWarzone = this.name.includes('Warzone');
     this.epsilon = isWarzone ? 0.95 : 0.8;  // Start high for true random discovery
-    this.alpha = isWarzone ? 0.25 : 0.20;   // Start with fast learning
+    this.alpha = isWarzone ? 0.15 : 0.12;   // Conservative learning rates from the start
     
     this.turnHistory = [];
     this.countedGames.clear();
@@ -1586,7 +1764,7 @@ export class LearningAgent {
       insights.push(`⚡ LEGACY MODE: Strategy-focused learning`);
     }
     
-    insights.push(`🧠 Q-table: ${this.qTable.size}/${this.MAX_STATES} states (LRU managed)`);
+    insights.push(`🧠 Q-table: ${this.qTable.size.toLocaleString()} states (unlimited capacity)`);
     
     // Show top features by importance
     const topFeatures = this.getFeatureImportance().slice(0, 5);
@@ -1626,6 +1804,29 @@ export class LearningAgent {
       insights.push(`Strategy: ${Math.round(preferLegal/total*100)}% legal, ${Math.round(preferIllegal/total*100)}% illegal, ${Math.round(preferAudit/total*100)}% AUDIT`);
     }
     
+    // Show trips strategy insights if learned
+    if (this.qTable.size > 1000) {
+      let tripsHoldCount = 0;
+      let tripsPlayCount = 0;
+      
+      // Sample some states to see trips behavior
+      for (const [stateKey, actions] of this.qTable.entries()) {
+        if (stateKey.includes('-0-1-')) { // Has trips (closestToTrips=0, tripsDelta>0)
+          const playQ = actions.get('play-legal') || 0;
+          const auditQ = actions.get('audit-highest') || 0;
+          
+          if (auditQ > playQ && auditQ > 0) tripsHoldCount++;
+          if (playQ > auditQ && playQ > 0) tripsPlayCount++;
+        }
+        if (tripsHoldCount + tripsPlayCount > 50) break; // Sample enough
+      }
+      
+      if (tripsHoldCount + tripsPlayCount > 10) {
+        const holdRatio = Math.round((tripsHoldCount / (tripsHoldCount + tripsPlayCount)) * 100);
+        insights.push(`♣️ Trips strategy: ${holdRatio}% hold for audit, ${100-holdRatio}% play immediately`);
+      }
+    }
+    
     // Clarify episodes vs games
     if (this.stats.episodesCompleted > 0) {
       insights.push(`🎮 Episodes: ${this.stats.episodesCompleted} (${this.stats.gamesPlayed} participations)`);
@@ -1662,16 +1863,21 @@ export class LearningAgent {
     if (this.stats.breakthroughActive > 0) {
       insights.push(`🚀 BREAKTHROUGH MODE ACTIVE! (${this.stats.breakthroughActive} episodes remaining)`);
     } else if (this.stats.plateauLength > 50) {
-      insights.push(`⚠️ PLATEAU: ${this.stats.plateauLength} episodes without improvement`);
-      if (this.stats.plateauLength > 80) {
-        insights.push(`🚀 Breakthrough imminent (triggers at 100)`);
+      if (this.epsilon > 0.10) {
+        insights.push(`⚠️ Plateau detected but exploration still high (${Math.round(this.epsilon * 100)}%)`);
+        insights.push(`   Breakthroughs only trigger when exploration ≤ 10%`);
+      } else {
+        insights.push(`⚠️ PLATEAU: ${this.stats.plateauLength} episodes without improvement`);
+        if (this.stats.plateauLength > 80) {
+          insights.push(`🚀 Breakthrough imminent (triggers at 100)`);
+        }
       }
     }
     if (this.stats.breakthroughCount > 0) {
       insights.push(`🚀 Total breakthroughs: ${this.stats.breakthroughCount}`);
     }
     
-    insights.push(`💾 Memory: ${this.qTable.size} states (max ${this.MAX_STATES})`);
+    insights.push(`💾 Memory: ${this.qTable.size.toLocaleString()} states`);
     
     return insights;
   }

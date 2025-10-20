@@ -8,13 +8,14 @@ Two powerful evolutionary mechanisms to ensure AI agents achieve true mastery:
 *Automatic plateau detection and forced exploration*
 
 ### How It Works
+- **Maturity Check**: Only activates when exploration ≤ 10% (mature agent)
 - **Detects Plateaus**: Tracks episodes without win rate improvement
-- **Threshold**: After 100 episodes with <2% improvement
-- **Response**: Aggressive exploration spike
-  - Exploration: 3x increase (capped at 80%, minimum 50%)
-  - Learning Rate: 2x increase (capped at 30%)
+- **Threshold**: After 100 episodes with <2% improvement AND exploration ≤ 10%
+- **Response**: Targeted exploration spike for mature agents
+  - Exploration: 5x increase to 30-50% range (moderate disruption)
+  - Learning Rate: 30% boost (hard capped at 15% maximum)
   - **Gradual Decay**: Returns to normal over 50 episodes
-  - Forces discovery of new strategies
+  - Forces discovery without destabilizing learned strategies
 
 ### The Science
 When agents stop improving, they're likely stuck in a local optimum. The breakthrough spike forces them to:
@@ -25,16 +26,18 @@ When agents stop improving, they're likely stuck in a local optimum. The breakth
 
 ### Visual Indicator
 ```
+Early Game (Episode 200, Exploration 35%):
+⚠️ Plateau detected but exploration still high (35%)
+   Breakthroughs only trigger when exploration ≤ 10%
+
+Late Game (Episode 800, Exploration 8%):
 ⚠️ PLATEAU: 78 episodes without improvement
 🚀 Breakthrough imminent (triggers at 100)
 🚀 BREAKTHROUGH MODE ACTIVATED!
-   Exploration: 15.2% → 45.6%
-   Learning: 7.8% → 15.6%
+   Agent is mature (exploration: 8.0%)
+   Exploration: 8.0% → 40.0%
+   Learning: 5.0% → 6.5% (capped at 15%)
    Breakthrough will decay over next 50 episodes
-
-Episode 101: 🚀 BREAKTHROUGH MODE ACTIVE! (49 episodes remaining)
-Episode 110: 🚀 BREAKTHROUGH MODE ACTIVE! (40 episodes remaining)
-Episode 150: Breakthrough mode ended, returning to normal decay
 ```
 
 ## Strategy 2: EXTINCTION EVENTS 💀
@@ -58,6 +61,7 @@ Like biological evolution, the weakest "dies" and is "reborn" with:
 - **Winner Reward**: Leader gets exploration reduced by 10%
 - **Gap Requirement**: Only triggers if >15% performance gap
 - **Smart Preservation**: Keeps highest-value state-action pairs
+- **Controlled Rebirth**: Reborn at 60% exploration, 15% learning (not 70%/30%)
 
 ### Visual Indicator
 ```
@@ -66,10 +70,41 @@ Strongest: Warzone-1 (44.5%)
 Weakest: Warzone-3 (18.2%)
 💀 EXTINCTION EVENT for Warzone-3!
    Preserved 145 high-value states from 1823
-   Reborn with 70% exploration, 30% learning rate
+   Reborn with 60% exploration, 15% learning rate
 🏆 Warzone-1 rewarded: exploration reduced to 13.5%
 💀💀💀 EXTINCTION COMPLETE 💀💀💀
 ```
+
+## Mathematical Foundation: Why 15% Learning Rate Cap
+
+In Q-learning, the learning rate (α) determines update magnitude:
+```
+Q(s,a) = (1-α) * Q(s,a) + α * new_experience
+```
+
+### At α = 0.25 (Too Aggressive)
+- 25% new information, 75% old
+- **4 experiences** can completely rewrite strategy
+- Single lucky hand can derail months of training
+- High variance game + high learning = instability
+
+### At α = 0.15 (Optimal Balance)
+- 15% new information, 85% old
+- **7 experiences** needed for full belief revision
+- Smooths out card game variance
+- Strategy changes require consistent evidence
+- Natural progression: 15% → 3% over 1000 episodes
+
+### The Decay Path
+```
+Episode    1: α = 15.0% (Quick initial learning)
+Episode  100: α = 12.5% (Still responsive)
+Episode  500: α =  8.0% (Solidifying strategies)
+Episode 1000: α =  5.0% (Fine-tuning)
+Episode 2000: α =  3.0% (Minimal adjustments)
+```
+
+This creates stable convergence without losing adaptability.
 
 ## Why These Work
 
@@ -112,18 +147,19 @@ const REBIRTH_LEARNING = 0.30;        // 30% learning rate on rebirth
 
 ### Episodes 50-200: DIVERGENCE
 - Agents begin specializing
-- First plateaus detected (~episode 150)
-- First breakthrough events trigger
+- Plateaus may be detected but ignored (exploration still > 10%)
+- No breakthroughs yet - natural exploration still high
 
 ### Episodes 200-500: EVOLUTION
 - First extinction event at 200
 - Weak strategies eliminated
 - Strong strategies reinforced
-- Multiple breakthrough cycles
+- Exploration drops toward 10%
 
 ### Episodes 500-1000: REFINEMENT
+- **First breakthroughs possible** (exploration now ≤ 10%)
+- Mature agents escape local minima
 - Extinction events become rare (small gaps)
-- Breakthroughs still occur but less frequently
 - Convergence toward optimal play
 
 ### Episodes 1000+: MASTERY

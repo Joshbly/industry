@@ -127,6 +127,7 @@ export function AITrainer() {
   const [trainingSpeed, setTrainingSpeed] = useState(100); // ms between moves
   const [episodesTarget, setEpisodesTarget] = useState(100);
   const [currentEpisode, setCurrentEpisode] = useState(0);
+  const [cumulativeEpisodes, setCumulativeEpisodes] = useState(0); // Total episodes across all sessions
   const [insights, setInsights] = useState<string[]>([]);
   const [showTrainer, setShowTrainer] = useState(false);
   const [isWarzoneMode, setIsWarzoneMode] = useState(false);
@@ -399,7 +400,10 @@ export function AITrainer() {
   
   const startTraining = async () => {
     try {
-      console.log('Starting training with', episodesTarget, 'episodes');
+      // Get the current max episodes completed by agents (preserve progress)
+      const startingEpisodes = Math.max(...agents.map(a => a.stats.episodesCompleted || 0), cumulativeEpisodes);
+      console.log(`Resuming training from episode ${startingEpisodes + 1}, running ${episodesTarget} more episodes`);
+      
       setIsTraining(true);
       isTrainingRef.current = true;
       setCurrentEpisode(0);
@@ -417,12 +421,14 @@ export function AITrainer() {
           break;
         }
         
-        console.log('Running episode', i + 1);
-        await runTrainingEpisode(i + 1);
+        const actualEpisode = startingEpisodes + i + 1;
+        console.log(`Running episode ${actualEpisode} (${i + 1} of ${episodesTarget} in this batch)`);
+        await runTrainingEpisode(actualEpisode);
         setCurrentEpisode(i + 1);
+        setCumulativeEpisodes(actualEpisode);
         
         // === EXTINCTION EVENT: Every 200 episodes in Warzone mode ===
-        if ((i + 1) % 200 === 0 && isWarzoneMode && agents.length > 1) {
+        if (actualEpisode % 200 === 0 && isWarzoneMode && agents.length > 1) {
           const agentStats = agents.map(agent => ({
             name: agent.name,
             winRate: agent.stats.winRate,
@@ -436,7 +442,7 @@ export function AITrainer() {
           
           // Only trigger if there's significant performance gap
           if (strongest.winRate - weakest.winRate > 0.15) { // 15% gap
-            console.log(`\n💀💀💀 EXTINCTION EVENT - Episode ${i + 1} 💀💀💀`);
+            console.log(`\n💀💀💀 EXTINCTION EVENT - Episode ${actualEpisode} 💀💀💀`);
             console.log(`Strongest: ${strongest.name} (${(strongest.winRate * 100).toFixed(1)}%)`);
             console.log(`Weakest: ${weakest.name} (${(weakest.winRate * 100).toFixed(1)}%)`);
             
@@ -451,7 +457,7 @@ export function AITrainer() {
         }
         
         // Update UI and save progress periodically
-        if (i % 10 === 0) {
+        if (actualEpisode % 10 === 0) {
           const allInsights: string[] = [];
           agents.forEach(agent => {
             allInsights.push(`=== ${agent.name} ===`);
@@ -503,6 +509,7 @@ export function AITrainer() {
       });
       setInsights(allInsights);
       setCurrentEpisode(0);
+      setCumulativeEpisodes(0);
       setCurrentBatchName('Reset Batch');
     }
   };
@@ -573,29 +580,52 @@ export function AITrainer() {
       const newBatches = [...savedBatches, batch];
       
       // Check localStorage size before saving
-      const dataSize = JSON.stringify(newBatches).length;
-      const sizeMB = dataSize / (1024 * 1024);
-      console.log(`Saving ${sizeMB.toFixed(2)}MB to localStorage`);
+      const batchDataStr = JSON.stringify(newBatches);
+      const sizeMB = batchDataStr.length / (1024 * 1024);
+      console.log(`💾 Attempting to save ${sizeMB.toFixed(2)}MB to localStorage...`);
       
-      if (sizeMB > 5) {
-        // localStorage has ~5-10MB limit
-        alert(`Warning: Batch data is ${sizeMB.toFixed(2)}MB. May exceed localStorage limit. Consider exporting to file instead.`);
+      // Try to save to localStorage
+      try {
+        setSavedBatches(newBatches);
+        localStorage.setItem('rheinhessen-ai-batches', batchDataStr);
+        setCurrentBatchName(name);
+        setBatchName('');
+        
+        console.log('✅ Batch saved to localStorage successfully!');
+        alert(`✅ Batch "${name}" saved successfully! (${sizeMB.toFixed(2)}MB)`);
+      } catch (storageError: any) {
+        console.error('localStorage failed:', storageError);
+        
+        // Auto-export to file if localStorage fails
+        const exportData = {
+          batchName: name,
+          agents: data,
+          metadata: batch.metadata
+        };
+        
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `rheinhessen-batch-${name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.json`;
+        
+        console.log(`📥 Auto-downloading batch as file due to storage limit...`);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        // Still update the current batch name
+        setCurrentBatchName(name);
+        setBatchName('');
+        
+        alert(`⚠️ localStorage is full (tried to save ${sizeMB.toFixed(2)}MB).\n\n` +
+              `✅ Batch has been automatically downloaded as a file instead.\n\n` +
+              `💡 You can import this file later using the Import button.`);
       }
-      
-      setSavedBatches(newBatches);
-      localStorage.setItem('rheinhessen-ai-batches', JSON.stringify(newBatches));
-      setCurrentBatchName(name);
-      setBatchName('');
-      
-      console.log('Batch saved successfully!');
-      alert(`Batch "${name}" saved successfully!`);
     } catch (error) {
       console.error('Failed to save batch:', error);
-      if (error instanceof DOMException && error.name === 'QuotaExceededError') {
-        alert('Storage quota exceeded! Try deleting old batches or exporting to file instead.');
-      } else {
-        alert(`Failed to save batch: ${error}`);
-      }
+      alert(`Failed to save batch: ${error}`);
     }
   };
   
@@ -603,14 +633,24 @@ export function AITrainer() {
     // Clear existing agents
     learningAgents.clear();
     
+    // Track max episodes for cumulative count
+    let maxEpisodes = 0;
+    
     // Load the saved agents
     Object.keys(batch.agents).forEach(agentName => {
       const agent = getLearningAgent(agentName);
       agent.importKnowledge(batch.agents[agentName]);
+      
+      // Track the maximum episodes completed
+      maxEpisodes = Math.max(maxEpisodes, agent.stats.episodesCompleted || 0);
+      
       // Ensure batch name is set and saved
       agent.batchName = batch.name;
       agent.saveToStorage();
     });
+    
+    // Set cumulative episodes to match loaded batch
+    setCumulativeEpisodes(maxEpisodes);
     
     // Update insights
     const allInsights: string[] = [];
@@ -622,6 +662,8 @@ export function AITrainer() {
     setInsights(allInsights);
     setCurrentBatchName(batch.name);
     setShowBatchManager(false);
+    
+    console.log(`Loaded batch: ${batch.name} with ${maxEpisodes} episodes completed`);
   };
   
   const deleteBatch = (index: number) => {
@@ -649,6 +691,7 @@ export function AITrainer() {
     setInsights(allInsights);
     setCurrentBatchName('Fresh Batch');
     setCurrentEpisode(0);
+    setCumulativeEpisodes(0);
   };
   
   // Calculate total localStorage usage
@@ -1245,13 +1288,30 @@ export function AITrainer() {
                           return;
                         }
                         
-                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                        // Calculate total states and size
+                        let totalStates = 0;
+                        Object.values(data.agents).forEach((agent: any) => {
+                          if (agent.qTable) {
+                            totalStates += Object.keys(agent.qTable).length;
+                          }
+                        });
+                        
+                        const jsonStr = JSON.stringify(data, null, 2);
+                        const sizeMB = jsonStr.length / (1024 * 1024);
+                        
+                        console.log(`📤 Exporting batch: ${currentBatchName}`);
+                        console.log(`📊 Size: ${sizeMB.toFixed(2)}MB with ${totalStates} total states`);
+                        console.log(`🎯 Agents: ${Object.keys(data.agents).join(', ')}`);
+                        
+                        const blob = new Blob([jsonStr], { type: 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = `rheinhessen-batch-${currentBatchName.replace(/\s+/g, '-').toLowerCase()}.json`;
+                        a.download = `rheinhessen-batch-${currentBatchName.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.json`;
                         a.click();
                         URL.revokeObjectURL(url);
+                        
+                        alert(`Exported ${Object.keys(data.agents).length} agents with ${totalStates} states (${sizeMB.toFixed(2)}MB).\n\nFile saved to your Downloads folder.`);
                       } catch (error) {
                         console.error('Failed to export batch:', error);
                         alert(`Failed to export batch: ${error}`);
@@ -1274,21 +1334,49 @@ export function AITrainer() {
                           const reader = new FileReader();
                           reader.onload = (event) => {
                             try {
-                              const data = JSON.parse(event.target?.result as string);
+                              const fileContent = event.target?.result as string;
+                              const fileSizeMB = fileContent.length / (1024 * 1024);
+                              console.log(`📂 Importing file: ${file.name} (${fileSizeMB.toFixed(2)}MB)`);
                               
-                              // Handle both old and new format
-                              const agentsData = data.agents || data;
-                              const batchName = data.batchName || 'Imported';
+                              const data = JSON.parse(fileContent);
+                              
+                              // Handle single agent file (from auto-download) or batch file
+                              let agentsData: any = {};
+                              let batchName = 'Imported';
+                              
+                              if (data.qTable && data.stats) {
+                                // Single agent file from auto-download
+                                const agentName = data.name || file.name.split('_')[0];
+                                agentsData[agentName] = data;
+                                batchName = `${agentName}_import`;
+                                console.log(`📥 Importing single agent: ${agentName}`);
+                              } else {
+                                // Multi-agent batch file
+                                agentsData = data.agents || data;
+                                batchName = data.batchName || 'Imported';
+                              }
+                              
+                              let importCount = 0;
+                              let totalStates = 0;
                               
                               Object.keys(agentsData).forEach(agentName => {
                                 if (typeof agentsData[agentName] === 'object') {
                                   const agent = getLearningAgent(agentName);
                                   agent.importKnowledge(agentsData[agentName]);
-                                  // Ensure batch name is set and saved
+                                  
+                                  // Count imported data
+                                  const agentStates = Object.keys(agentsData[agentName].qTable || {}).length;
+                                  totalStates += agentStates;
+                                  importCount++;
+                                  
+                                  console.log(`✅ Imported ${agentName}: ${agentStates} states`);
+                                  
+                                  // Set batch name but DON'T save to storage yet - let user decide
                                   agent.batchName = batchName;
-                                  agent.saveToStorage();
                                 }
                               });
+                              
+                              alert(`Successfully imported ${importCount} agents with ${totalStates} total states from ${fileSizeMB.toFixed(2)}MB file!\n\nThe data is loaded in memory. Use 'Save Batch' to persist to localStorage if it fits.`);
                               
                               // Update insights
                               const allInsights: string[] = [];
@@ -1319,7 +1407,7 @@ export function AITrainer() {
                 {isTraining && (
                   <div className="mt-4">
                     <div className="text-sm text-gray-300">
-                      Episode {currentEpisode} / {episodesTarget}
+                      Batch: {currentEpisode} / {episodesTarget} | Total: {cumulativeEpisodes} episodes
                     </div>
                     <div className="w-full bg-gray-700 rounded-full h-2 mt-1">
                       <div 
@@ -1334,7 +1422,9 @@ export function AITrainer() {
               {/* Statistics */}
               <div className="bg-gray-900 rounded p-4">
                 <h3 className="text-white font-semibold mb-3">Learning Statistics</h3>
-                <div className="text-xs text-gray-400 mb-2">Episode {currentEpisode} of {episodesTarget}</div>
+                <div className="text-xs text-gray-400 mb-2">
+                  Batch Progress: {currentEpisode} of {episodesTarget} | Total Episodes: {cumulativeEpisodes}
+                </div>
                 {agents.map(agent => (
                   <div key={agent.name} className="mb-3">
                     <h4 className="text-purple-400 font-medium mb-2">{agent.name}</h4>
@@ -1386,29 +1476,30 @@ export function AITrainer() {
               
               {/* Reward Configuration */}
               <div className="bg-gray-900 rounded p-4">
-                <h3 className="text-white font-semibold mb-3">🔥 SAVAGE WILDMAN MODE 🔥</h3>
+                <h3 className="text-white font-semibold mb-3">⚔️ COLLUSION WARZONE MODE ⚔️</h3>
                 <div className="text-sm text-gray-300 space-y-1">
-                  <div>💰 <span className="text-green-400 font-bold">+1 per point</span> - POINTS = POWER!</div>
-                  <div>🏆 <span className="text-yellow-400 font-bold">+300 for wins</span> - WIN AT ALL COSTS!</div>
-                  <div>🔥 <span className="text-red-500 font-bold">+60 AUDIT SUCCESS</span> - AUDITS ARE MONEY!</div>
-                  <div>🎯 <span className="text-red-400 font-bold">+80 AUDIT LEADER</span> - Cut them down!</div>
-                  <div>💣 <span className="text-orange-500 font-bold">+15 HOLDING TRIPS</span> - Save audit ammo!</div>
-                  <div>💎 <span className="text-purple-400 font-bold">+25 MEGA HANDS</span> - Full house/Quads!</div>
-                  <div>⚔️ <span className="text-orange-400">+15 aggressive play</span> - Big illegal scores!</div>
-                  <div>🎲 <span className="text-blue-400">+8 strategic pass</span> - Build monsters!</div>
-                  <div>🔨 <span className="text-cyan-400">+12 hand building</span> - Pass then SMASH!</div>
-                  <div>⚠️ <span className="text-red-400">-50 external</span> - Only real penalty</div>
+                  <div>🏆 <span className="text-yellow-400 font-bold">+1000 WIN</span> - ONLY GOAL!</div>
+                  <div>💀 <span className="text-red-500 font-bold">-500 LOSE</span> - FAILURE!</div>
+                  <div className="text-orange-400 font-bold">ANTI-LEADER COLLUSION:</div>
+                  <div>🎯 <span className="text-yellow-300">+150 base</span> - Attack the leader</div>
+                  <div>⚡ <span className="text-orange-400">+250 @ 250pts</span> - Medium urgency</div>
+                  <div>🔥 <span className="text-red-400 font-bold">+400 @ 275pts</span> - HIGH URGENCY</div>
+                  <div>🚨 <span className="text-red-600 font-bold">+600 @ 290pts</span> - EMERGENCY!</div>
+                  <div>💥 <span className="text-purple-400">+300 PREVENT WIN</span> - Stop them!</div>
+                  <div className="text-cyan-400 font-bold">GANG TACTICS:</div>
+                  <div>🤝 <span className="text-cyan-300">+100 FOLLOW-UP</span> - Join the attack</div>
+                  <div>⚔️ <span className="text-cyan-500">+150 PILE ON</span> - Gang assault!</div>
                 </div>
               </div>
               
               {/* Instructions */}
               <div className="text-xs text-gray-400 border-t border-gray-700 pt-3">
-                <p className="text-orange-400 font-bold mb-1">🔥 SAVAGE WILDMAN PHILOSOPHY:</p>
-                <p>• AUDIT AGGRESSIVELY - Hold cheap trips, strike often!</p>
-                <p>• Score relentlessly - Every point is +1 reward!</p>
-                <p>• Build MEGA hands - Pass with trash, build monsters!</p>
-                <p>• Take risks - No punishment for losing!</p>
-                <p>• Hunt the leader - Massive bonus for audit attacks!</p>
+                <p className="text-red-500 font-bold mb-1">⚔️ ANTI-LEADER COLLUSION PROTOCOL:</p>
+                <p>• <span className="text-yellow-400">PROGRESSIVE URGENCY</span> - More aggressive as leader approaches 300</p>
+                <p>• <span className="text-orange-400">GANG UP</span> - Multiple AIs coordinate attacks on leader</p>
+                <p>• <span className="text-red-400">EMERGENCY MODE</span> - At 290+ points, stop them at ALL COSTS</p>
+                <p>• <span className="text-cyan-400">PILE ON</span> - Join attacks for bonus coordination rewards</p>
+                <p>• <span className="text-purple-400">CUT THEM DOWN</span> - Big rewards for large score drops</p>
                 <p className="mt-2 text-yellow-400">
                   💪 Long-term thinking (γ=0.97) + Fast learning (α=0.15) = UNSTOPPABLE
                 </p>

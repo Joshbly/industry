@@ -1,8 +1,8 @@
 import type { ProductionResult } from './types';
 
 export function scoreLegal(raw: number): number {
-  // 70% of raw + 8 compliance bonus
-  return Math.round(raw * 0.70 + 8);
+  // 50% of raw + 8 compliance bonus (reduced from 70% to encourage more risk-taking)
+  return Math.round(raw * 0.50 + 8);
 }
 
 export function scoreIllegal(raw: number, auditTrack: number): ProductionResult {
@@ -30,6 +30,6 @@ export function scoreIllegal(raw: number, auditTrack: number): ProductionResult 
 }
 
 export function calculateTaxedValue(raw: number): number {
-  // Taxed value for internal audit requirement
-  return Math.round(raw * 0.70 + 8);
+  // Taxed value for internal audit requirement (50% + 8 bonus, matching legal scoring)
+  return Math.round(raw * 0.50 + 8);
 }

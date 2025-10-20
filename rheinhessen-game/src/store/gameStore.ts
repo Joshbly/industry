@@ -157,7 +157,7 @@ const useGameStore = create<GameStore>((set, get) => ({
     if (currentPlayer.persona !== 'Human') return;
     
     let newMatch = applyProduction(match, currentPlayer.id, selectedCards, 'legal');
-    const points = Math.round(rawValue(selectedCards) * 0.70 + 8);
+    const points = Math.round(rawValue(selectedCards) * 0.50 + 8);  // Updated from 0.70 to match new scoring
     
     get().addLog(`${currentPlayer.name} played LEGAL for ${points} points`);
     get().events.push({

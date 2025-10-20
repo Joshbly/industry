@@ -2,15 +2,15 @@ import { describe, test, expect } from 'vitest';
 import { scoreLegal, scoreIllegal, calculateTaxedValue } from './scoring';
 
 describe('scoreLegal', () => {
-  test('calculates 70% + 8 bonus correctly', () => {
-    expect(scoreLegal(20)).toBe(22); // 20 * 0.7 + 8 = 22
-    expect(scoreLegal(30)).toBe(29); // 30 * 0.7 + 8 = 29
-    expect(scoreLegal(50)).toBe(43); // 50 * 0.7 + 8 = 43
+  test('calculates 50% + 8 bonus correctly', () => {
+    expect(scoreLegal(20)).toBe(18); // 20 * 0.5 + 8 = 18
+    expect(scoreLegal(30)).toBe(23); // 30 * 0.5 + 8 = 23
+    expect(scoreLegal(50)).toBe(33); // 50 * 0.5 + 8 = 33
   });
   
   test('rounds correctly', () => {
-    expect(scoreLegal(25)).toBe(26); // 25 * 0.7 + 8 = 25.5 → 26
-    expect(scoreLegal(15)).toBe(19); // 15 * 0.7 + 8 = 18.5 → 19
+    expect(scoreLegal(25)).toBe(21); // 25 * 0.5 + 8 = 20.5 → 21
+    expect(scoreLegal(15)).toBe(16); // 15 * 0.5 + 8 = 15.5 → 16
   });
 });
 
@@ -57,14 +57,14 @@ describe('scoreIllegal', () => {
 
 describe('calculateTaxedValue', () => {
   test('matches legal scoring formula', () => {
-    expect(calculateTaxedValue(20)).toBe(22); // Same as legal score
-    expect(calculateTaxedValue(12)).toBe(16); // 12 * 0.7 + 8 = 16.4 → 16
-    expect(calculateTaxedValue(10)).toBe(15); // 10 * 0.7 + 8 = 15
+    expect(calculateTaxedValue(20)).toBe(18); // Same as legal score
+    expect(calculateTaxedValue(12)).toBe(14); // 12 * 0.5 + 8 = 14
+    expect(calculateTaxedValue(10)).toBe(13); // 10 * 0.5 + 8 = 13
   });
   
   test('meets minimum 12 threshold for internal audit', () => {
     // Find minimum raw value that produces taxed >= 12
-    expect(calculateTaxedValue(5)).toBe(12); // 5 * 0.7 + 8 = 11.5 → 12
-    expect(calculateTaxedValue(4)).toBe(11); // 4 * 0.7 + 8 = 10.8 → 11
+    expect(calculateTaxedValue(8)).toBe(12); // 8 * 0.5 + 8 = 12
+    expect(calculateTaxedValue(7)).toBe(12); // 7 * 0.5 + 8 = 11.5 → 12 (rounds up)
   });
 });

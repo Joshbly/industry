@@ -231,7 +231,7 @@ function decideOpportunist(state: MatchState, playerId: number): AIDecision {
   const auditTarget = findBestAuditTarget(state, playerId);
   if (auditHand && auditTarget) {
     const fine = estimateFine(state.players[auditTarget].floor);
-    const cost = auditHand.raw * 0.7;
+    const cost = auditHand.raw * 0.5;  // Updated from 0.7 to 0.5 to match legal scoring
     const net = fine - cost;
     
     // Audit if net≥0 or (Track≥3 and net≥-2)

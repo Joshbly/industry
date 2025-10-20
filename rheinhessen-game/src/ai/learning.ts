@@ -425,7 +425,7 @@ export class LearningAgent {
     const myBestAuditHand = findBestAuditHand(player.hand);
     const hasValidAuditHand = myBestAuditHand !== null;
     const myAuditHandValue = myBestAuditHand ? calculateTaxedValue(myBestAuditHand.raw) : 0;
-    const auditHandCost = myBestAuditHand ? myBestAuditHand.raw * 0.7 : 0;
+    const auditHandCost = myBestAuditHand ? myBestAuditHand.raw * 0.5 : 0;  // Updated from 0.7 to match legal scoring
     
     // Calculate my vulnerability (how much I could lose if audited)
     const { leftover: myLeftover } = reorganizeGreedy(player.floor);

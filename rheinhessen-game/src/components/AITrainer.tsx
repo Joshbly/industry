@@ -7,7 +7,27 @@ const learningAgents = new Map<string, LearningAgent>();
 
 // Default configurations for different agent variants
 const AGENT_CONFIGS: AgentConfig[] = [
-  // WARZONE AGENTS - Pure competition, only winning matters
+  // PURE WARZONE AGENTS - Only winning/losing matters, zero guidance
+  {
+    name: 'PureWarzone-1',
+    epsilon: 1.0,       // Start 100% random - pure discovery
+    // alpha: 0.1 (slower learning), gamma: 0.98 (strong future focus)
+    // ALL rewards are 0 except +1000 win / -1000 lose
+  },
+  {
+    name: 'PureWarzone-2',
+    epsilon: 1.0,       // Start 100% random
+  },
+  {
+    name: 'PureWarzone-3',
+    epsilon: 1.0,       // Start 100% random
+  },
+  {
+    name: 'PureWarzone-4',
+    epsilon: 1.0,       // Start 100% random
+  },
+  
+  // WARZONE AGENTS - Pure competition, only winning matters (with some guidance)
   {
     name: 'Warzone-1',
     epsilon: 0.95,      // Start nearly pure random (95%)
@@ -86,7 +106,14 @@ export function getLearningAgent(name: string = 'Balanced'): LearningAgent {
     // If no config found, create a default one based on the name
     if (!config) {
       console.warn(`No config found for agent: ${name}, using default`);
-      if (name.startsWith('Warzone')) {
+      if (name.startsWith('PureWarzone')) {
+        // Create PureWarzone config - will use special handling
+        config = {
+          name,
+          epsilon: 1.0,  // Start 100% random
+          gamma: 0.98    // Strong future focus
+        };
+      } else if (name.startsWith('Warzone')) {
         // Create warzone config
         config = {
           name,
@@ -130,7 +157,7 @@ export function AITrainer() {
   const [cumulativeEpisodes, setCumulativeEpisodes] = useState(0); // Total episodes across all sessions
   const [insights, setInsights] = useState<string[]>([]);
   const [showTrainer, setShowTrainer] = useState(false);
-  const [isWarzoneMode, setIsWarzoneMode] = useState(false);
+  const [trainingModeType, setTrainingModeType] = useState<'legacy' | 'warzone' | 'pure'>('legacy');
   const [selectedAgents, setSelectedAgents] = useState<string[]>(['Explorer', 'Conservative', 'Balanced', 'Aggressive']);
   const [trainingMode, setTrainingMode] = useState<'self-play' | 'vs-bots'>('self-play');
   const [useLearnerInGames, setUseLearnerInGames] = useState(
@@ -157,6 +184,9 @@ export function AITrainer() {
     };
   });
   
+  // Track the loaded batch for gameplay
+  const [loadedGameplayBatch, setLoadedGameplayBatch] = useState<string>('Current Training');
+  
   // Get all selected agents - ensure they're initialized
   const agents = selectedAgents.map(name => {
     const agent = getLearningAgent(name);
@@ -167,16 +197,19 @@ export function AITrainer() {
     return agent;
   }).filter(Boolean);  // Remove any undefined agents
   
-  // Switch agents when warzone mode changes
+  // Switch agents when training mode type changes
   useEffect(() => {
-    if (isWarzoneMode) {
+    if (trainingModeType === 'pure') {
+      setSelectedAgents(['PureWarzone-1', 'PureWarzone-2', 'PureWarzone-3', 'PureWarzone-4']);
+      setCurrentBatchName('PURE ADVERSARIAL');
+    } else if (trainingModeType === 'warzone') {
       setSelectedAgents(['Warzone-1', 'Warzone-2', 'Warzone-3', 'Warzone-4']);
       setCurrentBatchName('WARZONE');
     } else {
       setSelectedAgents(['Explorer', 'Conservative', 'Balanced', 'Aggressive']);
       setCurrentBatchName('Legacy');
     }
-  }, [isWarzoneMode]);
+  }, [trainingModeType]);
   
   // Load saved batches on mount
   useEffect(() => {
@@ -427,8 +460,8 @@ export function AITrainer() {
         setCurrentEpisode(i + 1);
         setCumulativeEpisodes(actualEpisode);
         
-        // === EXTINCTION EVENT: Every 200 episodes in Warzone mode ===
-        if (actualEpisode % 200 === 0 && isWarzoneMode && agents.length > 1) {
+        // === EXTINCTION EVENT: Every 200 episodes in Warzone/Pure mode ===
+        if (actualEpisode % 200 === 0 && (trainingModeType === 'warzone' || trainingModeType === 'pure') && agents.length > 1) {
           const agentStats = agents.map(agent => ({
             name: agent.name,
             winRate: agent.stats.winRate,
@@ -596,32 +629,16 @@ export function AITrainer() {
       } catch (storageError: any) {
         console.error('localStorage failed:', storageError);
         
-        // Auto-export to file if localStorage fails
-        const exportData = {
-          batchName: name,
-          agents: data,
-          metadata: batch.metadata
-        };
-        
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `rheinhessen-batch-${name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.json`;
-        
-        console.log(`📥 Auto-downloading batch as file due to storage limit...`);
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // Don't auto-download - just warn the user
+        console.error(`⚠️ localStorage is full (tried to save ${sizeMB.toFixed(2)}MB)`);
         
         // Still update the current batch name
         setCurrentBatchName(name);
         setBatchName('');
         
         alert(`⚠️ localStorage is full (tried to save ${sizeMB.toFixed(2)}MB).\n\n` +
-              `✅ Batch has been automatically downloaded as a file instead.\n\n` +
-              `💡 You can import this file later using the Import button.`);
+              `💡 You can manually export this batch using the Export button.\n` +
+              `🗑️ Or clear storage to make room.`);
       }
     } catch (error) {
       console.error('Failed to save batch:', error);
@@ -661,6 +678,7 @@ export function AITrainer() {
     });
     setInsights(allInsights);
     setCurrentBatchName(batch.name);
+    setLoadedGameplayBatch(batch.name);  // Set for gameplay too
     setShowBatchManager(false);
     
     console.log(`Loaded batch: ${batch.name} with ${maxEpisodes} episodes completed`);
@@ -994,6 +1012,27 @@ export function AITrainer() {
                 
                 {useLearnerInGames && (
                   <>
+                    {/* Batch Selector for Gameplay */}
+                    {(trainingModeType === 'warzone' || trainingModeType === 'pure') && (
+                      <div className="mb-4 p-3 bg-gray-800 rounded border border-gray-700">
+                        <div className="text-sm text-gray-300 mb-2">Playing with batch:</div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-white font-bold">{loadedGameplayBatch}</span>
+                          <button
+                            onClick={() => setShowBatchManager(true)}
+                            className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded"
+                          >
+                            Load Batch
+                          </button>
+                        </div>
+                        {loadedGameplayBatch !== 'Current Training' && agents.some(a => a.batchName) && (
+                          <div className="text-xs text-purple-400 mt-1">
+                            Episodes: {Math.max(...agents.map(a => a.stats.episodesCompleted || 0))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
                     <div className="flex gap-2 mb-3">
                       <button
                         onClick={() => {
@@ -1036,7 +1075,14 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          {isWarzoneMode ? (
+                          {trainingModeType === 'pure' ? (
+                            <>
+                              <option value="PureWarzone-1">PureWarzone-1</option>
+                              <option value="PureWarzone-2">PureWarzone-2</option>
+                              <option value="PureWarzone-3">PureWarzone-3</option>
+                              <option value="PureWarzone-4">PureWarzone-4</option>
+                            </>
+                          ) : trainingModeType === 'warzone' ? (
                             <>
                               <option value="Warzone-1">Warzone-1</option>
                               <option value="Warzone-2">Warzone-2</option>
@@ -1061,7 +1107,14 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          {isWarzoneMode ? (
+                          {trainingModeType === 'pure' ? (
+                            <>
+                              <option value="PureWarzone-1">PureWarzone-1</option>
+                              <option value="PureWarzone-2">PureWarzone-2</option>
+                              <option value="PureWarzone-3">PureWarzone-3</option>
+                              <option value="PureWarzone-4">PureWarzone-4</option>
+                            </>
+                          ) : trainingModeType === 'warzone' ? (
                             <>
                               <option value="Warzone-1">Warzone-1</option>
                               <option value="Warzone-2">Warzone-2</option>
@@ -1086,7 +1139,14 @@ export function AITrainer() {
                           className="bg-gray-700 text-white px-2 py-1 rounded text-sm"
                         >
                           <option value="Regular">Regular AI</option>
-                          {isWarzoneMode ? (
+                          {trainingModeType === 'pure' ? (
+                            <>
+                              <option value="PureWarzone-1">PureWarzone-1</option>
+                              <option value="PureWarzone-2">PureWarzone-2</option>
+                              <option value="PureWarzone-3">PureWarzone-3</option>
+                              <option value="PureWarzone-4">PureWarzone-4</option>
+                            </>
+                          ) : trainingModeType === 'warzone' ? (
                             <>
                               <option value="Warzone-1">Warzone-1</option>
                               <option value="Warzone-2">Warzone-2</option>
@@ -1115,29 +1175,49 @@ export function AITrainer() {
               <div className="bg-gray-900 rounded p-4">
                 <h3 className="text-white font-semibold mb-3">Training Configuration</h3>
                 
-                {/* WARZONE MODE TOGGLE */}
-                <div className="mb-4 p-3 bg-red-950 border-2 border-red-600 rounded">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-red-400 font-bold">⚔️ WARZONE MODE</div>
-                      <div className="text-xs text-gray-400">Pure competition - Only winning matters</div>
-                    </div>
+                {/* TRAINING MODE SELECTOR */}
+                <div className="mb-4 p-3 bg-gray-800 border-2 border-gray-600 rounded">
+                  <div className="text-white font-bold mb-2">Training Mode</div>
+                  <div className="grid grid-cols-3 gap-2">
                     <button
-                      onClick={() => setIsWarzoneMode(!isWarzoneMode)}
-                      className={`px-4 py-2 rounded font-bold transition-all ${
-                        isWarzoneMode
+                      onClick={() => setTrainingModeType('legacy')}
+                      className={`px-3 py-2 rounded font-bold transition-all ${
+                        trainingModeType === 'legacy'
+                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/50'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <div>Legacy</div>
+                      <div className="text-xs font-normal">Guided</div>
+                    </button>
+                    <button
+                      onClick={() => setTrainingModeType('warzone')}
+                      className={`px-3 py-2 rounded font-bold transition-all ${
+                        trainingModeType === 'warzone'
+                          ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/50'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <div>⚔️ Warzone</div>
+                      <div className="text-xs font-normal">Competition</div>
+                    </button>
+                    <button
+                      onClick={() => setTrainingModeType('pure')}
+                      className={`px-3 py-2 rounded font-bold transition-all ${
+                        trainingModeType === 'pure'
                           ? 'bg-red-600 text-white shadow-lg shadow-red-600/50'
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
                     >
-                      {isWarzoneMode ? 'ACTIVE' : 'OFF'}
+                      <div>🎯 Pure</div>
+                      <div className="text-xs font-normal">Win Only</div>
                     </button>
                   </div>
-                  {isWarzoneMode && (
-                    <div className="mt-2 text-xs text-red-300">
-                      🔥 4 identical killers competing to WIN AT ALL COSTS
-                    </div>
-                  )}
+                  <div className="mt-2 text-xs text-gray-400">
+                    {trainingModeType === 'legacy' && '📚 Strategy-focused personas with specific reward guidance'}
+                    {trainingModeType === 'warzone' && '🔥 4 competitors with minimal guidance - winning is everything'}
+                    {trainingModeType === 'pure' && '💀 ZERO GUIDANCE - Only +1000 win / -1000 lose - Pure discovery'}
+                  </div>
                 </div>
                 
                 <div className="mb-4">
@@ -1168,14 +1248,17 @@ export function AITrainer() {
                 
                 <div>
                   <label className="text-sm text-gray-300 block mb-2">
-                    {isWarzoneMode ? '⚔️ Warzone Competitors' : 'Active Learner Agents'}
+                    {trainingModeType === 'pure' ? '🎯 Pure Adversaries' : 
+                     trainingModeType === 'warzone' ? '⚔️ Warzone Competitors' : 
+                     'Active Learner Agents'}
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     {AGENT_CONFIGS
-                      .filter(config => isWarzoneMode ? 
-                        config.name?.startsWith('Warzone') : 
-                        !config.name?.startsWith('Warzone')
-                      )
+                      .filter(config => {
+                        if (trainingModeType === 'pure') return config.name?.startsWith('PureWarzone');
+                        if (trainingModeType === 'warzone') return config.name?.startsWith('Warzone-');
+                        return !config.name?.startsWith('Warzone') && !config.name?.startsWith('PureWarzone');
+                      })
                       .map(config => (
                         <label key={config.name} className="flex items-center space-x-2">
                           <input
@@ -1188,10 +1271,10 @@ export function AITrainer() {
                                 setSelectedAgents(selectedAgents.filter(n => n !== config.name));
                               }
                             }}
-                            disabled={isWarzoneMode}  // In warzone, all 4 compete
-                            className={`w-4 h-4 ${isWarzoneMode ? 'text-red-600' : 'text-blue-600'}`}
+                            disabled={trainingModeType === 'warzone' || trainingModeType === 'pure'}  // In warzone/pure, all 4 compete
+                            className={`w-4 h-4 ${trainingModeType === 'pure' ? 'text-red-600' : trainingModeType === 'warzone' ? 'text-orange-600' : 'text-blue-600'}`}
                           />
-                          <span className={`text-sm ${isWarzoneMode ? 'text-red-300' : 'text-gray-300'}`}>
+                          <span className={`text-sm ${trainingModeType === 'pure' ? 'text-red-300' : trainingModeType === 'warzone' ? 'text-orange-300' : 'text-gray-300'}`}>
                             {config.name}
                           </span>
                         </label>

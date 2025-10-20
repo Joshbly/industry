@@ -89,9 +89,16 @@ const useGameStore = create<GameStore>((set, get) => ({
       // Configure each opponent based on settings
       const configurePlayer = (playerIdx: number, configValue: string) => {
         if (configValue !== 'Regular') {
-          // It's a learner variant
-          match.players[playerIdx].name = `Learner ${configValue}`;
-          match.players[playerIdx].persona = `Learner-${configValue}` as any;
+          // Check if it's a Warzone/PureWarzone agent (direct name) or other learner
+          if (configValue.includes('Warzone')) {
+            // Direct Warzone/PureWarzone agent
+            match.players[playerIdx].name = configValue;
+            match.players[playerIdx].persona = configValue as any;
+          } else {
+            // It's a learner variant (Explorer, Conservative, etc.)
+            match.players[playerIdx].name = `Learner ${configValue}`;
+            match.players[playerIdx].persona = `Learner-${configValue}` as any;
+          }
         }
       };
       

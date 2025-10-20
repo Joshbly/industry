@@ -193,13 +193,23 @@ function CorporateRival({
   
   // Get training info for learner agents
   const getTrainingInfo = () => {
-    if (player.persona && typeof player.persona === 'string' && player.persona.startsWith('Learner-')) {
-      const agentName = player.persona.replace('Learner-', '');
-      try {
-        const agent = getLearningAgent(agentName);
-        return agent.getTrainingInfo();
-      } catch {
-        return '';
+    if (player.persona && typeof player.persona === 'string') {
+      // Handle both Learner- and direct agent names (like PureWarzone-1)
+      let agentName = '';
+      if (player.persona.startsWith('Learner-')) {
+        agentName = player.persona.replace('Learner-', '');
+      } else if (player.persona.includes('Warzone')) {
+        // Direct Warzone/PureWarzone agents
+        agentName = player.persona;
+      }
+      
+      if (agentName) {
+        try {
+          const agent = getLearningAgent(agentName);
+          return agent.getTrainingInfo();
+        } catch {
+          return '';
+        }
       }
     }
     return '';

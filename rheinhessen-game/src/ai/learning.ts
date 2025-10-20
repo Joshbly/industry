@@ -248,10 +248,26 @@ export class LearningAgent {
     this.gamma = config.gamma ?? 0.95;        // Discount factor
     this.name = config.name ?? 'Warzone';
     
-    // In WARZONE mode, start with maximum exploration and controlled learning
+    // PURE WARZONE mode - only win/lose matters
+    const isPureWarzone = config.name?.includes('PureWarzone');
     const isWarzone = config.name?.includes('Warzone');
-    if (isWarzone) {
-      // Start nearly pure random, will decay based on performance
+    
+    if (isPureWarzone) {
+      // Start with 100% random exploration - pure discovery
+      this.epsilon = 1.0;   // 100% random initially
+      this.alpha = 0.1;     // Slower learning - needs more evidence
+      this.gamma = 0.98;    // Strong future focus - winning is all that matters
+      
+      // STRIP ALL INTERMEDIATE REWARDS - only win/lose
+      Object.keys(this.rewards).forEach(key => {
+        this.rewards[key as keyof typeof this.rewards] = 0;
+      });
+      this.rewards.winGame = 1000;   // The ONLY positive reward
+      this.rewards.loseGame = -1000; // The ONLY negative reward
+      
+      console.log(`🎮 ${this.name}: PURE ADVERSARIAL MODE - Only winning matters!`);
+    } else if (isWarzone) {
+      // Regular Warzone - has some guidance
       this.epsilon = 0.95;  // 95% random initially
       this.alpha = 0.15;    // 15% max - requires 7+ consistent experiences to change strategy
       this.gamma = 0.95;    // Balanced horizon
@@ -976,7 +992,38 @@ export class LearningAgent {
     const newPlayer = newState.players[playerId];
     const prevFeatures = this.extractFeatures(prevState, playerId);
     
-    // Basic score tracking (small reward to encourage scoring)
+    // PURE WARZONE: Skip ALL intermediate rewards
+    const isPureWarzone = this.name.includes('PureWarzone');
+    if (isPureWarzone) {
+      // Only check game end - nothing else matters
+      if (newState.winnerId !== undefined) {
+        const gameKey = this.currentGameId || `game-${Date.now()}`;
+        const shouldCountGame = !this.countedGames.has(gameKey);
+        
+        if (shouldCountGame) {
+          this.countedGames.add(gameKey);
+          this.stats.gamesPlayed++;
+          this.stats.totalScore += newPlayer.score;
+          this.stats.avgScore = this.stats.totalScore / this.stats.gamesPlayed;
+          
+          if (newState.winnerId === playerId) {
+            this.stats.gamesWon++;
+            this.stats.winRate = this.stats.gamesWon / this.stats.gamesPlayed;
+            reward = this.rewards.winGame; // +1000
+            
+            if (this.stats.gamesWon % 50 === 0) {
+              console.log(`🎯 ${this.name}: ${this.stats.gamesWon} wins / ${this.stats.gamesPlayed} games (${Math.round(this.stats.winRate * 100)}%)`);
+            }
+          } else {
+            this.stats.winRate = this.stats.gamesWon / this.stats.gamesPlayed;
+            reward = this.rewards.loseGame; // -1000
+          }
+        }
+      }
+      return reward; // Exit early for pure warzone
+    }
+    
+    // Regular rewards for non-pure modes
     const pointsGained = newPlayer.score - prevPlayer.score;
     reward += pointsGained * this.rewards.pointGain;
     
@@ -1173,6 +1220,7 @@ export class LearningAgent {
 
   // PERFORMANCE-BASED exploration AND learning rate decay
   public updateExploration(episodesCompleted: number) {
+    const isPureWarzone = this.name.includes('PureWarzone');
     const isWarzone = this.name.includes('Warzone');
     
     // Calculate performance metrics
@@ -1182,7 +1230,18 @@ export class LearningAgent {
     // Performance factor: 0.5 (struggling) to 2.0 (dominating)
     let performanceFactor = 1.0;
     
-    if (episodesCompleted >= 10) { // Need some games to judge
+    // PURE WARZONE: Custom decay to reach ~15-20% by episode 1000
+    if (isPureWarzone) {
+      // Special handling for PureWarzone - we want to reach ~17.5% by episode 1000
+      // This requires a specific decay rate independent of performance
+      // We'll handle this specially in calculateNormalEpsilon
+      performanceFactor = -1; // Special flag for PureWarzone
+      
+      // Only start decaying after initial exploration
+      if (episodesCompleted < 100) {
+        performanceFactor = 0; // No decay for first 100 episodes
+      }
+    } else if (episodesCompleted >= 10) { // Need some games to judge
       // Win rate influence (0-1 scale)
       const winFactor = winRate * 2; // 0% wins = 0, 50% wins = 1, 100% wins = 2
       
@@ -1200,13 +1259,13 @@ export class LearningAgent {
     if (this.stats.breakthroughActive > 0) {
       // We're in breakthrough mode - decay FROM the breakthrough spike
       const decayProgress = 1 - (this.stats.breakthroughActive / 50); // 50 episodes to decay back
-      const normalEpsilon = this.calculateNormalEpsilon(episodesCompleted, isWarzone, performanceFactor);
+      const normalEpsilon = this.calculateNormalEpsilon(episodesCompleted, performanceFactor, isWarzone || isPureWarzone);
       
       // Interpolate between breakthrough epsilon and normal epsilon
       this.epsilon = this.stats.breakthroughEpsilon * (1 - decayProgress) + normalEpsilon * decayProgress;
       
       // Modest learning boost during breakthrough (cap at 15%)
-      const normalAlpha = this.calculateNormalAlpha(episodesCompleted, isWarzone, performanceFactor);
+      const normalAlpha = this.calculateNormalAlpha(episodesCompleted, performanceFactor, isWarzone || isPureWarzone);
       this.alpha = Math.min(0.15, normalAlpha * (1 + 0.3 * (1 - decayProgress))); // Up to 30% boost, capped at 15%
       
       // Decrement breakthrough counter
@@ -1217,8 +1276,8 @@ export class LearningAgent {
       }
     } else {
       // Normal decay when not in breakthrough
-      this.epsilon = this.calculateNormalEpsilon(episodesCompleted, isWarzone, performanceFactor);
-      this.alpha = this.calculateNormalAlpha(episodesCompleted, isWarzone, performanceFactor);
+      this.epsilon = this.calculateNormalEpsilon(episodesCompleted, performanceFactor, isWarzone || isPureWarzone);
+      this.alpha = this.calculateNormalAlpha(episodesCompleted, performanceFactor, isWarzone || isPureWarzone);
     }
     
     // === LOGGING ===
@@ -1235,7 +1294,25 @@ export class LearningAgent {
     this.detectPlateau(episodesCompleted);
   }
   
-  private calculateNormalEpsilon(episodesCompleted: number, isWarzone: boolean, performanceFactor: number): number {
+  private calculateNormalEpsilon(episodesCompleted: number, performanceFactor: number, isWarzone: boolean): number {
+    // Special handling for PureWarzone (performanceFactor = -1)
+    if (performanceFactor === -1) {
+      // PureWarzone: Start at 100%, reach ~17.5% by episode 1000
+      // Math: 0.175 = 1.0 * (decay^1000) => decay = 0.175^(1/1000) ≈ 0.9982
+      const pureWarzoneDecay = 0.9925;
+      const startEpsilon = 1.0;
+      const minEpsilon = 0.03;
+      
+      // Apply decay only after episode 100
+      const effectiveEpisodes = Math.max(0, episodesCompleted - 100);
+      
+      return Math.max(
+        minEpsilon,
+        startEpsilon * Math.pow(pureWarzoneDecay, effectiveEpisodes)
+      );
+    }
+    
+    // Normal decay for other modes
     const baseExplorationDecay = isWarzone ? 0.997 : 0.995;
     const adjustedExplorationDecay = Math.pow(baseExplorationDecay, performanceFactor);
     
@@ -1248,7 +1325,7 @@ export class LearningAgent {
     );
   }
   
-  private calculateNormalAlpha(episodesCompleted: number, isWarzone: boolean, performanceFactor: number): number {
+  private calculateNormalAlpha(episodesCompleted: number, performanceFactor: number, isWarzone: boolean): number {
     // Slower decay for more stable learning
     const baseLearningDecay = 0.9995;  // Even slower decay since we start lower
     const adjustedLearningDecay = Math.pow(baseLearningDecay, performanceFactor * 0.5); // Less sensitive to performance
@@ -1529,22 +1606,10 @@ export class LearningAgent {
         const dataStr = JSON.stringify(data);
         const sizeMB = dataStr.length / (1024 * 1024);
         
-        // Create a downloadable file
-        const blob = new Blob([dataStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${this.name}_training_${Date.now()}.json`;
-        
-        console.log(`📥 Downloading ${this.name} training data as file...`);
-        console.log(`📊 File size: ${sizeMB.toFixed(2)}MB with ${this.qTable.size} states`);
-        console.log(`💡 Import this file later using the Import Batch feature`);
-        
-        // Auto-download the file
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        // DON'T auto-download - just warn the user
+        console.warn(`⚠️ Storage quota exceeded for ${this.name}!`);
+        console.warn(`📊 Attempted to save: ${sizeMB.toFixed(2)}MB with ${this.qTable.size} states`);
+        console.warn(`💡 Consider clearing storage or exporting manually`);
         
         // Clear ONLY other agents' data to make some room
         for (let key in localStorage) {

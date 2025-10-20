@@ -39,6 +39,16 @@ export function decideAI(state: MatchState, playerId: number): AIDecision {
   const player = state.players[playerId];
   const persona = player.persona;
   
+  // Check if it's a Warzone/PureWarzone agent (direct name)
+  if (typeof persona === 'string' && persona.includes('Warzone')) {
+    if (getLearningAgent) {
+      const agent = getLearningAgent(persona);
+      return agent.chooseAction(state, playerId);
+    }
+    // Fallback to balanced if learner not loaded
+    return decideBalanced(state, playerId);
+  }
+  
   // Check if it's a learner variant (e.g., 'Learner-Explorer')
   if (typeof persona === 'string' && persona.startsWith('Learner-')) {
     if (getLearningAgent) {

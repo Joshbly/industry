@@ -3,6 +3,7 @@ import { bestLegalGreedy, bestSafeIllegalGreedy, getHandType } from '../engine/e
 import { scoreLegal, scoreIllegal, calculateTaxedValue } from '../engine/scoring';
 import { reorganizeGreedy } from '../engine/audits';
 import { rawValue } from '../engine/deck';
+import type { GranularLearningAgent } from './granularLearning';
 
 // Find best legal hand that qualifies for audit (trips or better, taxed >= 12)
 function findAuditHand(hand: Card[]): { cards: Card[]; raw: number } | null {
@@ -29,6 +30,8 @@ export interface AIDecision {
 
 // Import at top of file for Learner support
 let getLearningAgent: ((name?: string) => any) | null = null;
+let getGranularAgent: ((name?: string) => GranularLearningAgent | null) | null = null;
+
 if (typeof window !== 'undefined') {
   import('../components/AITrainer').then(module => {
     getLearningAgent = module.getLearningAgent;
@@ -38,6 +41,19 @@ if (typeof window !== 'undefined') {
 export function decideAI(state: MatchState, playerId: number): AIDecision {
   const player = state.players[playerId];
   const persona = player.persona;
+  
+  // Check if it's a Granular agent (for enhanced hand management)
+  if (typeof persona === 'string' && persona.startsWith('Granular-')) {
+    if (getGranularAgent) {
+      const agentName = persona.replace('Granular-', '');
+      const agent = getGranularAgent(agentName);
+      if (agent) {
+        return agent.decide(state, playerId);
+      }
+    }
+    // Fallback to balanced if granular not loaded
+    return decideBalanced(state, playerId);
+  }
   
   // Check if it's a Warzone/PureWarzone agent (direct name)
   if (typeof persona === 'string' && persona.includes('Warzone')) {
@@ -91,15 +107,15 @@ function decideAggro(state: MatchState, playerId: number): AIDecision {
   
   // Calculate points for each option
   const legalPoints = legal ? scoreLegal(legal.raw) : 0;
-  const safePoints = safe ? scoreIllegal(safe.raw, state.auditTrack).points : 0;
-  const dumpPoints = scoreIllegal(dumpAll.raw, state.auditTrack).points;
+  const safePoints = safe ? scoreIllegal(safe.raw).points : 0;
+  const dumpPoints = scoreIllegal(dumpAll.raw).points;
   
   // Audit consideration - aggressive but not foolish
   const auditHand = findAuditHand(player.hand);
   const auditTarget = findBestAuditTarget(state, playerId);
   if (auditHand && auditTarget && Math.random() > 0.5) { // 50% chance to audit when beneficial
     const fine = estimateFine(state.players[auditTarget].floor);
-    const cost = auditHand.raw * 0.7;
+    const cost = auditHand.raw * 0.3; // Matches 30% legal scoring
     if (fine - cost >= 10) {
       return {
         doInternal: true,
@@ -141,7 +157,7 @@ function decideBalanced(state: MatchState, playerId: number): AIDecision {
   const safe = bestSafeIllegalGreedy(player.hand, 26);
   
   const legalPoints = legal ? scoreLegal(legal.raw) : 0;
-  const safePoints = safe ? scoreIllegal(safe.raw, state.auditTrack).points : 0;
+  const safePoints = safe ? scoreIllegal(safe.raw).points : 0;
   
   // At Track 4, prefer legal if within 10% of safe
   if (state.auditTrack === 4) {
@@ -186,11 +202,11 @@ function decideConservative(state: MatchState, playerId: number): AIDecision {
   const dumpAll = { cards: player.hand, raw: rawValue(player.hand) };
   
   const legalPoints = legal ? scoreLegal(legal.raw) : 0;
-  const safePoints = safe ? scoreIllegal(safe.raw, state.auditTrack).points : 0;
-  const dumpPoints = scoreIllegal(dumpAll.raw, state.auditTrack).points;
+  const safePoints = safe ? scoreIllegal(safe.raw).points : 0;
+  const dumpPoints = scoreIllegal(dumpAll.raw).points;
   
-  // At Track ≥3, prefer legal unless safe beats it by ≥25%
-  if (state.auditTrack >= 3) {
+  // At Track ≥4, prefer legal unless safe beats it by ≥25%
+  if (state.auditTrack >= 4) {
     if (legal && safePoints < legalPoints * 1.25) {
       return {
         doInternal: false,
@@ -233,19 +249,19 @@ function decideOpportunist(state: MatchState, playerId: number): AIDecision {
   const dumpAll = { cards: player.hand, raw: rawValue(player.hand) };
   
   const legalPoints = legal ? scoreLegal(legal.raw) : 0;
-  const safePoints = safe ? scoreIllegal(safe.raw, state.auditTrack).points : 0;
-  const dumpPoints = scoreIllegal(dumpAll.raw, state.auditTrack).points;
+  const safePoints = safe ? scoreIllegal(safe.raw).points : 0;
+  const dumpPoints = scoreIllegal(dumpAll.raw).points;
   
   // Opportunist audits aggressively
   const auditHand = findAuditHand(player.hand);
   const auditTarget = findBestAuditTarget(state, playerId);
   if (auditHand && auditTarget) {
     const fine = estimateFine(state.players[auditTarget].floor);
-    const cost = auditHand.raw * 0.5;  // Updated from 0.7 to 0.5 to match legal scoring
+    const cost = auditHand.raw * 0.3;  // Matches 30% legal scoring
     const net = fine - cost;
     
-    // Audit if net≥0 or (Track≥3 and net≥-2)
-    if (net >= 0 || (state.auditTrack >= 3 && net >= -2)) {
+    // Audit if net≥0 or (Track≥4 and net≥-2)
+    if (net >= 0 || (state.auditTrack >= 4 && net >= -2)) {
       return {
         doInternal: true,
         targetId: auditTarget,
@@ -265,7 +281,7 @@ function decideOpportunist(state: MatchState, playerId: number): AIDecision {
   
   // Dump only pre-Track 3 and ahead by ≥6
   const maxScore = Math.max(...state.players.filter(p => p.id !== playerId).map(p => p.score));
-  if (state.auditTrack < 3 && player.score >= maxScore + 6 && 
+  if (state.auditTrack < 5 && player.score >= maxScore + 6 && 
       dumpPoints === bestPoints) {
     return {
       doInternal: false,

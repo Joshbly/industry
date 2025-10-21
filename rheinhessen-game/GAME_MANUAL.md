@@ -108,13 +108,35 @@ Choose one:
 - Ace: 11 points
 
 ### Production Formulas
-- **Legal**: (Raw Value × 0.70) + 8
-- **Illegal (Safe, ≤26)**: Raw Value × 0.60
-- **Illegal (Dangerous, ≥27)**: (Raw Value × 0.60) - 5
+- **Legal**: Raw Value × 0.50 (no compliance bonus)
+- **Illegal (All)**: Raw Value × 1.00 (full value!)
+  - If ≥27: Adds 1-2 audit ticks (no point penalty)
 
 ### Audit Penalties
-- **Internal Audit Leftover**: Raw Value × 1.50 (fined from victim)
-- **External Audit Leftover**: Raw Value × 1.50 (double penalty)
+
+#### Internal Audit Fines
+When you get audited, you pay two separate penalties:
+
+1. **Reorganization Fine**: 25% of the value of ILLEGAL cards that need reorganization
+   - This only applies to cards that were in illegal productions
+   - Legal cards already on your floor are not fined
+   - Distributed to all players:
+     - Auditor gets 50% of this fine
+     - Remaining players split the other 50%
+
+2. **Confiscation Penalty**: Raw value of confiscated cards × 1.5
+   - This is the penalty for cards that couldn't be reorganized legally
+   - 100% goes to the auditor as a reward
+
+**Example**: If your floor has 40 points of legal cards and 60 points of illegal cards, with 20 points confiscated:
+- Reorganization fine: 60 × 0.25 = 15 points (only illegal cards count)
+- Confiscation penalty: 20 × 1.5 = 30 points
+- Total you pay: 45 points
+- Auditor receives: 7.5 (50% of reorg) + 30 (confiscation) = 37.5 points
+- Other players each get: Share of remaining 7.5 points
+
+#### External Audit 
+- **Penalty**: Raw Value × 1.50 (double penalty for leftover cards)
 
 ---
 

@@ -40,6 +40,13 @@ PureWarzone agents:
 - Decay rate: 0.9982 per episode (calculated to hit target)
 - Minimum exploration: 3% (never fully deterministic)
 
+### Learning Rate Strategy
+- All agents use simple linear decay for learning rate
+- Start at 15% for Warzone/PureWarzone agents (12% for standard)
+- Gradually decrease to 7.5% by episode 2500
+- No performance adjustments, spikes, or plateau detection
+- Consistent, predictable learning throughout training
+
 ### Reward Structure
 ```typescript
 rewards = {
@@ -89,8 +96,7 @@ rewards = {
 1. **Patience Required**: Expect 5-10x longer training times
 2. **Large Episode Counts**: Run 5000+ episodes for meaningful emergence
 3. **Population Training**: Train multiple PureWarzone agents simultaneously
-4. **Extinction Events**: Every 200 episodes, weak performers reset (keeps evolution pressure)
-5. **Save Checkpoints**: Save promising batches at 1000, 2000, 5000 episodes
+4. **Save Checkpoints**: Save promising batches at 1000, 2000, 5000 episodes
 
 ## Theoretical Advantages
 

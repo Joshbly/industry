@@ -40,7 +40,7 @@ export function HintsPanel() {
             {bestSafe.cards.length} cards, Raw: {bestSafe.raw}
           </div>
           <div className="text-gray-300">
-            Points: {scoreIllegal(bestSafe.raw, match.auditTrack).points}
+            Points: {scoreIllegal(bestSafe.raw).points}
           </div>
         </div>
       )}
@@ -52,7 +52,7 @@ export function HintsPanel() {
             {dumpAll.cards.length} cards, Raw: {dumpAll.raw}
           </div>
           <div className="text-gray-300">
-            Points: {scoreIllegal(dumpAll.raw, match.auditTrack).points}
+            Points: {scoreIllegal(dumpAll.raw).points}
             {dumpAll.raw >= 27 && (
               <span className="text-red-400"> (Spike!)</span>
             )}
@@ -62,11 +62,8 @@ export function HintsPanel() {
       
       <div className="text-xs text-gray-400 pt-2 border-t border-gray-700">
         Audit Track: {match.auditTrack}/5
-        {match.auditTrack >= 3 && (
-          <div className="text-orange-400">⚠ High audit risk!</div>
-        )}
-        {match.auditTrack === 4 && (
-          <div className="text-red-400">⚠ Next spike triggers external!</div>
+        {match.auditTrack >= 4 && (
+          <div className="text-red-400 animate-pulse">⚠ Next spike triggers external!</div>
         )}
       </div>
     </div>

@@ -395,7 +395,7 @@ function CorporateRival({
                         <div className="border-t border-gray-600 pt-2 mt-2">
                           <div className="bg-red-950/40 border border-red-700 rounded p-2">
                             <div className="text-xs text-red-400 font-bold mb-1">
-                              🚫 CONFISCATED CARDS (Fined {rawValue(player.confiscatedCards)} @ 1.5x = {Math.round(rawValue(player.confiscatedCards) * 1.5)})
+                              🚫 CONFISCATED CARDS (Fined {rawValue(player.confiscatedCards)} pts)
                             </div>
                             <div className="flex gap-1 flex-wrap mb-1">
                               {player.confiscatedCards.map(card => (
@@ -489,7 +489,7 @@ export function IndustrialUI() {
   // Check if selected cards form a valid legal hand
   const isValidLegalPlay = selectedCards.length > 0 && isLegalExact(selectedCards);
   const legalScore = isValidLegalPlay ? scoreLegal(selectedRaw) : 0;
-  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw, match.auditTrack) : null;
+  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw) : null;
   
   // Check if SELECTED cards can be used for audit
   const canAuditWithSelected = isHumanTurn && isValidAuditSelection(selectedCards);
@@ -717,7 +717,7 @@ export function IndustrialUI() {
                                 ))}
                               </div>
                               <div className="mt-2 text-xs text-gray-500">
-                                Points: {isLegal ? scoreLegal(groupRaw) : scoreIllegal(groupRaw, 0).points}
+                                Points: {isLegal ? scoreLegal(groupRaw) : scoreIllegal(groupRaw).points}
                               </div>
                             </div>
                           );
@@ -732,7 +732,7 @@ export function IndustrialUI() {
                                   🚫 CONFISCATED BASKET
                                 </div>
                                 <div className="text-xs text-red-300">
-                                  (Fine: {rawValue(humanPlayer.confiscatedCards)} raw @ 1.5x = {Math.round(rawValue(humanPlayer.confiscatedCards) * 1.5)} points)
+                                  (Fine: {rawValue(humanPlayer.confiscatedCards)} raw points)
                                 </div>
                               </div>
                               <div className="flex gap-1 flex-wrap mb-2">

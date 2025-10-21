@@ -152,7 +152,31 @@ export function applyInternal(
   
   // Reorganize target's floor
   const { kept, leftover } = reorganizeGreedy(target.floor);
-  const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
+  
+  // Calculate audit hand value as the multiplier (using raw value)
+  const multiplier = legal.raw / 10; // 30 raw = 3x, 50 raw = 5x
+  
+  // Calculate fines:
+  // 1. 25% fine on cards that were illegal and needed reorganization
+  // Calculate value of all illegal cards on the floor (these are what get reorganized)
+  const illegalCardsValue = target.floorGroups
+    ?.filter(group => !isLegalExact(group))  // Check if group is illegal
+    .reduce((sum, group) => sum + rawValue(group), 0) || rawValue(target.floor);
+  const reorganizationFine = Math.round(illegalCardsValue * 0.25);
+  
+  // 2. Full penalty from confiscated cards (multiplied by audit hand value / 10)
+  const confiscationPenalty = Math.round(rawValue(leftover) * multiplier);
+  
+  // Total fine the target pays
+  const totalFine = reorganizationFine + confiscationPenalty;
+  
+  // Distribution:
+  // - Auditor gets: 50% of reorganization fine + 100% of confiscation penalty
+  // - Other players split: 50% of reorganization fine
+  const auditorShare = Math.round(reorganizationFine * 0.5) + confiscationPenalty;
+  const otherPlayersShare = reorganizationFine - Math.round(reorganizationFine * 0.5);
+  const numOtherPlayers = state.players.filter(p => p.id !== accuserId && p.id !== targetId).length;
+  const sharePerOtherPlayer = numOtherPlayers > 0 ? Math.floor(otherPlayersShare / numOtherPlayers) : 0;
   
   // Add confiscated cards to bottom of deck (they go back into circulation immediately)
   newState.deck = [...newState.deck, ...leftover];
@@ -166,7 +190,7 @@ export function applyInternal(
       return {
         ...p,
         hand: p.hand.filter(c => !legal.cards.some(lc => lc.id === c.id)),
-        score: p.score + fine,
+        score: p.score + auditorShare,
         stats: { ...p.stats, internalsDone: p.stats.internalsDone + 1 }
       };
     }
@@ -176,11 +200,15 @@ export function applyInternal(
         floor: kept, // Only keep reorganized cards, confiscated ones are removed
         floorGroups: reorganizedGroups, // But groups are reorganized
         confiscatedCards: leftover, // Track what was confiscated
-        score: p.score - fine,
+        score: p.score - totalFine,
         stats: { ...p.stats, internalsRecv: p.stats.internalsRecv + 1 }
       };
     }
-    return p;
+    // Other players get a share of the reorganization fine
+    return {
+      ...p,
+      score: p.score + sharePerOtherPlayer
+    };
   });
   
   return newState;
@@ -206,7 +234,7 @@ export function applyInternalWithCards(
   if (!validHandTypes.includes(handType)) {
     return null; // Must be trips or better for internal audit
   }
-  
+
   const raw = rawValue(cards);
   if (calculateTaxedValue(raw) < 12) {
     return null; // Taxed value too low
@@ -227,7 +255,31 @@ export function applyInternalWithCards(
   
   // Reorganize target's floor
   const { kept, leftover } = reorganizeGreedy(target.floor);
-  const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier for confiscated cards
+  
+  // Calculate audit hand value as the multiplier (using raw value)
+  const multiplier = raw / 10; // 30 raw = 3x, 50 raw = 5x
+  
+  // Calculate fines:
+  // 1. 25% fine on cards that were illegal and needed reorganization
+  // Calculate value of all illegal cards on the floor (these are what get reorganized)
+  const illegalCardsValue = target.floorGroups
+    ?.filter(group => !isLegalExact(group))  // Check if group is illegal
+    .reduce((sum, group) => sum + rawValue(group), 0) || rawValue(target.floor);
+  const reorganizationFine = Math.round(illegalCardsValue * 0.25);
+  
+  // 2. Full penalty from confiscated cards (multiplied by audit hand value / 10)
+  const confiscationPenalty = Math.round(rawValue(leftover) * multiplier);
+  
+  // Total fine the target pays
+  const totalFine = reorganizationFine + confiscationPenalty;
+  
+  // Distribution:
+  // - Auditor gets: 50% of reorganization fine + 100% of confiscation penalty
+  // - Other players split: 50% of reorganization fine
+  const auditorShare = Math.round(reorganizationFine * 0.5) + confiscationPenalty;
+  const otherPlayersShare = reorganizationFine - Math.round(reorganizationFine * 0.5);
+  const numOtherPlayers = state.players.filter(p => p.id !== accuserId && p.id !== targetId).length;
+  const sharePerOtherPlayer = numOtherPlayers > 0 ? Math.floor(otherPlayersShare / numOtherPlayers) : 0;
   
   // Add confiscated cards to bottom of deck (they go back into circulation immediately)
   newState.deck = [...newState.deck, ...leftover];
@@ -241,7 +293,7 @@ export function applyInternalWithCards(
       return {
         ...p,
         hand: p.hand.filter(c => !cards.some(lc => lc.id === c.id)),
-        score: p.score + fine,
+        score: p.score + auditorShare,
         stats: { ...p.stats, internalsDone: p.stats.internalsDone + 1 }
       };
     }
@@ -251,11 +303,15 @@ export function applyInternalWithCards(
         floor: kept, // Only keep reorganized cards, confiscated ones are removed
         floorGroups: reorganizedGroups, // But groups are reorganized
         confiscatedCards: leftover, // Track what was confiscated
-        score: p.score - fine,
+        score: p.score - totalFine,
         stats: { ...p.stats, internalsRecv: p.stats.internalsRecv + 1 }
       };
     }
-    return p;
+    // Other players get a share of the reorganization fine
+    return {
+      ...p,
+      score: p.score + sharePerOtherPlayer
+    };
   });
   
   return newState;
@@ -290,7 +346,7 @@ export function applyProduction(
         : p
     );
   } else {
-    const result = scoreIllegal(raw, newState.auditTrack);
+    const result = scoreIllegal(raw);
     
     newState.players = newState.players.map(p =>
       p.id === playerId

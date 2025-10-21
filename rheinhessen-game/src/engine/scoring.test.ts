@@ -2,69 +2,85 @@ import { describe, test, expect } from 'vitest';
 import { scoreLegal, scoreIllegal, calculateTaxedValue } from './scoring';
 
 describe('scoreLegal', () => {
-  test('calculates 50% + 8 bonus correctly', () => {
-    expect(scoreLegal(20)).toBe(18); // 20 * 0.5 + 8 = 18
-    expect(scoreLegal(30)).toBe(23); // 30 * 0.5 + 8 = 23
-    expect(scoreLegal(50)).toBe(33); // 50 * 0.5 + 8 = 33
+  test('calculates 30% with heavy tax', () => {
+    expect(scoreLegal(20)).toBe(6); // 20 * 0.3 = 6
+    expect(scoreLegal(30)).toBe(9); // 30 * 0.3 = 9
+    expect(scoreLegal(50)).toBe(15); // 50 * 0.3 = 15
   });
   
   test('rounds correctly', () => {
-    expect(scoreLegal(25)).toBe(21); // 25 * 0.5 + 8 = 20.5 → 21
-    expect(scoreLegal(15)).toBe(16); // 15 * 0.5 + 8 = 15.5 → 16
+    expect(scoreLegal(25)).toBe(8); // 25 * 0.3 = 7.5 → 8
+    expect(scoreLegal(15)).toBe(5); // 15 * 0.3 = 4.5 → 5
   });
 });
 
 describe('scoreIllegal', () => {
-  test('calculates 60% for non-spike values', () => {
-    const result = scoreIllegal(20, 0);
-    expect(result.points).toBe(12); // 20 * 0.6 = 12
+  test('calculates 100% for non-spike values', () => {
+    const result = scoreIllegal(20);
+    expect(result.points).toBe(20); // 100% of raw value
     expect(result.ticksAdded).toBe(0);
     expect(result.kickback).toBe(0);
   });
   
-  test('applies kickback and single tick for spike (raw >= 27)', () => {
-    const result = scoreIllegal(30, 0);
-    expect(result.points).toBe(13); // 30 * 0.6 - 5 = 13
-    expect(result.ticksAdded).toBe(1);
-    expect(result.kickback).toBe(5);
+  test('graduated tick system: 1 tick per 26 raw, starting at 27', () => {
+    const result1 = scoreIllegal(26);
+    expect(result1.points).toBe(26);
+    expect(result1.ticksAdded).toBe(0); // 0-26 = no tick
+    
+    const result2 = scoreIllegal(27);
+    expect(result2.points).toBe(27);
+    expect(result2.ticksAdded).toBe(1); // 27-52 = 1 tick
+    
+    const result3 = scoreIllegal(52);
+    expect(result3.points).toBe(52);
+    expect(result3.ticksAdded).toBe(1); // Still 1 tick
+    
+    const result4 = scoreIllegal(53);
+    expect(result4.points).toBe(53);
+    expect(result4.ticksAdded).toBe(2); // 53-78 = 2 ticks
+    
+    const result5 = scoreIllegal(79);
+    expect(result5.points).toBe(79);
+    expect(result5.ticksAdded).toBe(3); // 79-104 = 3 ticks
   });
   
-  test('applies escalating +2 when track >= 3 and raw >= 25', () => {
-    const result = scoreIllegal(27, 3);
-    expect(result.points).toBe(11); // 27 * 0.6 - 5 = 11.2 → 11
-    expect(result.ticksAdded).toBe(2); // Escalating rule
-    expect(result.kickback).toBe(5);
-  });
-  
-  test('only +1 tick at track >= 3 if raw < 25', () => {
-    // This shouldn't happen since spike threshold is 27, but testing edge case
-    const result = scoreIllegal(24, 3);
-    expect(result.ticksAdded).toBe(0); // No spike, no ticks
+  test('handles edge cases at tick boundaries', () => {
+    const result1 = scoreIllegal(26);
+    expect(result1.ticksAdded).toBe(0); // 26 = no tick
+    
+    const result2 = scoreIllegal(27);
+    expect(result2.ticksAdded).toBe(1); // 27 = first tick
+    
+    const result3 = scoreIllegal(52);
+    expect(result3.ticksAdded).toBe(1); // 52 still = 1 tick
+    
+    const result4 = scoreIllegal(53);
+    expect(result4.ticksAdded).toBe(2); // 53 = 2 ticks
   });
   
   test('handles exactly raw = 27 threshold', () => {
-    const result = scoreIllegal(27, 0);
-    expect(result.points).toBe(11); // 27 * 0.6 - 5 = 11.2 → 11
-    expect(result.ticksAdded).toBe(1);
-    expect(result.kickback).toBe(5);
+    const result = scoreIllegal(27);
+    expect(result.points).toBe(27); // 100% value, no kickback
+    expect(result.ticksAdded).toBe(1); // First tick starts at 27
+    expect(result.kickback).toBe(0);
   });
   
-  test('rounds points correctly', () => {
-    const result = scoreIllegal(25, 0);
-    expect(result.points).toBe(15); // 25 * 0.6 = 15
+  test('returns full value', () => {
+    const result = scoreIllegal(25);
+    expect(result.points).toBe(25); // 100% value
   });
 });
 
 describe('calculateTaxedValue', () => {
   test('matches legal scoring formula', () => {
-    expect(calculateTaxedValue(20)).toBe(18); // Same as legal score
-    expect(calculateTaxedValue(12)).toBe(14); // 12 * 0.5 + 8 = 14
-    expect(calculateTaxedValue(10)).toBe(13); // 10 * 0.5 + 8 = 13
+    expect(calculateTaxedValue(20)).toBe(6); // 20 * 0.3 = 6
+    expect(calculateTaxedValue(30)).toBe(9); // 30 * 0.3 = 9
+    expect(calculateTaxedValue(10)).toBe(3); // 10 * 0.3 = 3
   });
   
   test('meets minimum 12 threshold for internal audit', () => {
     // Find minimum raw value that produces taxed >= 12
-    expect(calculateTaxedValue(8)).toBe(12); // 8 * 0.5 + 8 = 12
-    expect(calculateTaxedValue(7)).toBe(12); // 7 * 0.5 + 8 = 11.5 → 12 (rounds up)
+    expect(calculateTaxedValue(40)).toBe(12); // 40 * 0.3 = 12
+    expect(calculateTaxedValue(39)).toBe(12); // 39 * 0.3 = 11.7 → 12 (rounds up)
   });
 });

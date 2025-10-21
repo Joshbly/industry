@@ -247,11 +247,16 @@ export function AITrainer() {
   }, [currentEpisode, selectedAgents]);
   
   const runTrainingEpisode = async (episodeNumber: number = 0) => {
-    // Import all required functions at the top
-    const { createMatch, startTurn, applyProduction, applyInternalWithCards, applyInternal, advanceTurn, endCheck } = 
-      await import('../engine/match');
+    let match: any = null;
+    let turnCount = 0;
+    
+    try {
+      // Import all required functions at the top
+      const { createMatch, startTurn, applyProduction, applyInternalWithCards, applyInternal, advanceTurn, endCheck } = 
+        await import('../engine/match');
     const { bestLegalGreedy, getHandType } = await import('../engine/evaluation');
     const { decideAI } = await import('../ai/personas');
+    const { rawValue } = await import('../engine/deck');
     
     // Create a unique game ID for this episode
     const gameId = `episode-${episodeNumber}-${Date.now()}`;
@@ -260,7 +265,7 @@ export function AITrainer() {
     agents.forEach(agent => agent.setGameId(gameId));
     
     // Create match with randomized starting position for fairness
-    let match = createMatch(Math.random().toString(), { 
+    match = createMatch(Math.random().toString(), { 
       targetScore: 300, 
       escalating: true, 
       randomizeStart: true  // Always randomize in training
@@ -268,7 +273,7 @@ export function AITrainer() {
     
     // Log starting player for debugging position bias (more frequent for first games)
     if (episodeNumber % 25 === 1 || episodeNumber <= 3) {
-      console.log(`Episode ${episodeNumber}: Starting player is P${match.turnIdx + 1}`);
+      // Reduced logging for performance
     }
     
     match = startTurn(match);
@@ -294,8 +299,7 @@ export function AITrainer() {
       
       // Log seat assignments more frequently to show randomization working
       if (episodeNumber % 10 === 1 || episodeNumber <= 5) {
-        console.log(`Episode ${episodeNumber} seats: [${shuffledAgents.slice(0, 4).map((name, i) => 
-          `P${i+1}:${name}`).join(', ')}]`);
+        // Reduced logging for performance
       }
     } else {
       // Mix of learners and regular bots - also randomize learner positions
@@ -319,12 +323,27 @@ export function AITrainer() {
       action: any;
       playerId: number;
       agentName?: string;
+      features?: any; // TIER 1 OPTIMIZATION: Store extracted features
     }> = [];
     
-    // Play out the game
-    while (match.winnerId === undefined) {
+    turnCount = 0; // Reset turn counter (declared at top of function)
+    const MAX_TURNS = 200; // Safety limit to prevent infinite loops
+    
+    // Play out the game with safety limit
+    while (match.winnerId === undefined && turnCount < MAX_TURNS) {
       const currentPlayer = match.players[match.turnIdx];
       const prevMatch = match;
+      turnCount++; // Increment turn counter
+      
+      // Safety check for stuck games
+      if (turnCount >= MAX_TURNS) {
+        console.error(`Episode ${episodeNumber} exceeded ${MAX_TURNS} turns - forcing end`);
+        // Force winner to be highest score player
+        const scores = match.players.map((p: any) => p.score);
+        const maxScore = Math.max(...scores);
+        match.winnerId = match.players.findIndex((p: any) => p.score === maxScore);
+        break;
+      }
       
       // Check if current player is a learner
       const isLearner = currentPlayer.persona && 
@@ -335,7 +354,10 @@ export function AITrainer() {
         // Extract agent name from persona
         const agentName = (currentPlayer.persona as string).replace('Learner-', '');
         const agent = getLearningAgent(agentName);
-        const decision = agent.chooseAction(match, currentPlayer.id);
+        
+        // TIER 1 OPTIMIZATION: Extract features once and share
+        const features = agent.extractFeatures(match, currentPlayer.id);
+        const decision = agent.chooseAction(match, currentPlayer.id, features);
         
         // Store state-action for learning
         const action = decision.doInternal ? 'audit-highest' :
@@ -348,8 +370,12 @@ export function AITrainer() {
           state: prevMatch,
           action,
           playerId: currentPlayer.id,
-          agentName
+          agentName,
+          features // Store features for later use in learn()
         });
+        
+        // DON'T clear cache here - hands haven't changed yet!
+        // Only clear after cards are actually played
         
         // Apply decision
         if (decision.doInternal && decision.targetId !== undefined) {
@@ -360,19 +386,45 @@ export function AITrainer() {
             const validTypes = ['trips', 'straight', 'flush', 'full-house', 'quads', 'straight-flush'];
             if (validTypes.includes(handType)) {
               const newMatch = applyInternalWithCards(match, currentPlayer.id, decision.targetId, legal.cards);
-              if (newMatch) match = newMatch;
+              if (newMatch) {
+                match = newMatch;
+                // Don't clear cache here - let it manage itself
+              }
             }
           }
         }
         
         if (decision.production.cards) {
-          match = applyProduction(
+          const newMatch = applyProduction(
             match, 
             currentPlayer.id, 
             decision.production.cards,
             decision.production.type === 'legal' ? 'legal' : 'illegal'
           );
+          
+          // Safety check for valid state update
+          if (!newMatch) {
+            console.error(`Episode ${episodeNumber}: applyProduction returned null/undefined`);
+            // Force pass instead
+            decision.production = { type: 'pass' };
+          } else {
+            match = newMatch;
+          }
         }
+        
+        // Record turn for all learning agents (opponent modeling)
+        const turnAction = decision.doInternal ? 'audit' :
+                          decision.production.type === 'pass' ? 'pass' :
+                          decision.production.type === 'legal' ? 'legal' : 'illegal';
+        const scoreChange = match.players[currentPlayer.id].score - (prevMatch.players[currentPlayer.id]?.score || 0);
+        const auditTicksAdded = decision.production.cards && decision.production.type === 'illegal' && 
+                               rawValue(decision.production.cards) >= 27 ? 1 : 0;
+        
+        // Record for ALL learning agents
+        selectedAgents.forEach((name: string) => {
+          const agent = getLearningAgent(name);
+          agent.recordTurn(turnCount, currentPlayer.id, turnAction as any, scoreChange, auditTicksAdded);
+        });
       } else {
         // Other AIs play normally
         const decision = decideAI(match, currentPlayer.id);
@@ -390,6 +442,20 @@ export function AITrainer() {
             decision.production.type === 'legal' ? 'legal' : 'illegal'
           );
         }
+        
+        // Record turn for regular AI too (for opponent modeling)
+        const regAction = decision.doInternal ? 'audit' :
+                         decision.production.type === 'pass' ? 'pass' :
+                         decision.production.type === 'legal' ? 'legal' : 'illegal';
+        const regScoreChange = match.players[currentPlayer.id].score - (prevMatch.players[currentPlayer.id]?.score || 0);
+        const regAuditTicks = decision.production.cards && decision.production.type === 'illegal' && 
+                             rawValue(decision.production.cards) >= 27 ? 1 : 0;
+        
+        // Record for ALL learning agents
+        selectedAgents.forEach((name: string) => {
+          const agent = getLearningAgent(name);
+          agent.recordTurn(turnCount, currentPlayer.id, regAction as any, regScoreChange, regAuditTicks);
+        });
       }
       
       // Check end and advance
@@ -397,14 +463,48 @@ export function AITrainer() {
       if (result.over) {
         match = { ...match, winnerId: result.winnerId };
         
+        // Safety check for undefined winner
+        if (result.winnerId === undefined) {
+          console.error(`Episode ${episodeNumber} ended with undefined winner - using highest score`);
+          const scores = match.players.map((p: any) => p.score);
+          const maxScore = Math.max(...scores);
+          match.winnerId = match.players.findIndex((p: any) => p.score === maxScore);
+        }
+        // Log only every 10 episodes to reduce console overhead
+        if (episodeNumber % 10 === 0) {
+          console.log(`🏆 Episode ${episodeNumber} ended! Winner: P${result.winnerId}, Total states: ${previousStates.length}`);
+        }
+        
         // Learn from all stored states
+        const agentsLearned = new Set<string>();
         for (let i = 0; i < previousStates.length; i++) {
-          const { state, action, playerId, agentName } = previousStates[i];
+          const { state, action, playerId, agentName, features } = previousStates[i];
           if (agentName) {
+            agentsLearned.add(agentName);
             const learner = getLearningAgent(agentName);
-            learner.learn(state, action, match, playerId);
+            // TIER 1 OPTIMIZATION: Pass precomputed features
+            learner.learn(state, action, match, playerId, features);
           }
         }
+        // Removed console log for performance
+        
+        // CRITICAL FIX: Directly update opponent profiles for ALL agents
+        // The learn() method might not trigger profile updates if the agent already counted the game
+        // Update opponent profiles silently for performance
+        selectedAgents.forEach(agentName => {
+          const learner = getLearningAgent(agentName);
+          // Find which player this agent was
+          const playerIdx = match.players.findIndex((p: any) => p.persona === `Learner-${agentName}`);
+          if (playerIdx >= 0) {
+            // Silent profile update for performance
+            // Directly call the profile update method
+            learner.updateOpponentProfiles(match, playerIdx);
+          } else {
+            // Silent warning for performance
+          }
+          // Track episode completion timing
+          learner.markEpisodeComplete();
+        });
       } else {
         match = advanceTurn(match);
         match = startTurn(match);
@@ -414,21 +514,60 @@ export function AITrainer() {
           const lastState = previousStates[previousStates.length - 1];
           if (lastState.agentName) {
             const learner = getLearningAgent(lastState.agentName);
-            learner.learn(lastState.state, lastState.action, match, lastState.playerId);
+            // TIER 1 OPTIMIZATION: Use precomputed features
+            learner.learn(lastState.state, lastState.action, match, lastState.playerId, lastState.features);
           }
         }
       }
       
-      // Small delay to prevent browser freezing
-      if (Math.random() < 0.1) {
+      // Small delay to prevent browser freezing (only every 10 turns)
+      // Reduced frequency to improve performance
+      if (turnCount % 10 === 0) {
         await new Promise(resolve => setTimeout(resolve, 0));
       }
+      
+      // Extra safety: If we've been in this loop too long, yield more often
+      if (turnCount > 50 && turnCount % 5 === 0) {
+        console.warn(`Episode ${episodeNumber} has ${turnCount} turns - yielding to prevent hang`);
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    }
+    
+    // Log if we hit the turn limit
+    if (turnCount >= MAX_TURNS) {
+      console.error(`🚨 Episode ${episodeNumber} hit MAX_TURNS limit (${MAX_TURNS}). Game state may be stuck.`);
+      // Log agent stats for debugging
+      agents.forEach(agent => {
+        console.log(`${agent.name} stats:`, agent.stats);
+      });
     }
     
     // Update exploration rate and episode count for all agents
     agents.forEach(agent => {
       agent.updateExploration(episodeNumber);
     });
+    
+    // PERFORMANCE FIX: Save to storage periodically, not every learn()
+    if (episodeNumber % 10 === 0) {
+      agents.forEach(agent => agent.saveToStorage());
+      console.log(`💾 Saved Q-tables at episode ${episodeNumber}`);
+    }
+    } catch (error) {
+      console.error(`🚨 Critical error in episode ${episodeNumber}:`, error);
+      console.error('Stack trace:', (error as any).stack);
+      
+      // Log current game state for debugging
+      console.log('Turn count reached:', turnCount);
+      console.log('Match had winnerId:', match?.winnerId);
+      
+      // Force a winner to prevent complete hang
+      if (match && match.winnerId === undefined) {
+        const scores = match.players.map((p: any) => p.score);
+        const maxScore = Math.max(...scores);
+        match.winnerId = match.players.findIndex((p: any) => p.score === maxScore);
+        console.log('Forced winner:', match.winnerId);
+      }
+    }
   };
   
   const startTraining = async () => {
@@ -455,65 +594,52 @@ export function AITrainer() {
         }
         
         const actualEpisode = startingEpisodes + i + 1;
-        console.log(`Running episode ${actualEpisode} (${i + 1} of ${episodesTarget} in this batch)`);
+        // Log progress every 10 episodes to reduce console overhead
+        if (actualEpisode % 10 === 0) {
+          console.log(`Running episode ${actualEpisode} (${i + 1} of ${episodesTarget} in this batch)`);
+        }
         await runTrainingEpisode(actualEpisode);
         setCurrentEpisode(i + 1);
         setCumulativeEpisodes(actualEpisode);
         
-        // === EXTINCTION EVENT: Every 200 episodes in Warzone/Pure mode ===
-        if (actualEpisode % 200 === 0 && (trainingModeType === 'warzone' || trainingModeType === 'pure') && agents.length > 1) {
-          const agentStats = agents.map(agent => ({
-            name: agent.name,
-            winRate: agent.stats.winRate,
-            agent
-          }));
-          
-          // Find weakest and strongest
-          agentStats.sort((a, b) => b.winRate - a.winRate);
-          const strongest = agentStats[0];
-          const weakest = agentStats[agentStats.length - 1];
-          
-          // Only trigger if there's significant performance gap
-          if (strongest.winRate - weakest.winRate > 0.15) { // 15% gap
-            console.log(`\n💀💀💀 EXTINCTION EVENT - Episode ${actualEpisode} 💀💀💀`);
-            console.log(`Strongest: ${strongest.name} (${(strongest.winRate * 100).toFixed(1)}%)`);
-            console.log(`Weakest: ${weakest.name} (${(weakest.winRate * 100).toFixed(1)}%)`);
-            
-            // Trigger extinction for the weakest
-            weakest.agent.triggerExtinction(true, strongest.winRate);
-            
-            // Give a small bonus to the strongest (positive reinforcement)
-            strongest.agent.rewardDominance();
-            
-            console.log(`💀💀💀 EXTINCTION COMPLETE 💀💀💀\n`);
-          }
-        }
-        
-        // Update UI and save progress periodically
-        if (actualEpisode % 10 === 0) {
+        // Update UI more frequently for debugging (every 3 episodes)
+        if (actualEpisode % 3 === 0) {
           const allInsights: string[] = [];
           agents.forEach(agent => {
             allInsights.push(`=== ${agent.name} ===`);
-            allInsights.push(...agent.getInsights());
+            // PERFORMANCE: Use quick mode during training to skip expensive Q-table iteration
+            allInsights.push(...agent.getInsights(true));
             allInsights.push('');
+          });
+          setInsights(allInsights);
+          await new Promise(resolve => setTimeout(resolve, trainingSpeed));
+        }
+        
+        // Save progress less frequently (every 10 episodes)
+        if (actualEpisode % 10 === 0) {
+          agents.forEach(agent => {
             // Save progress with current batch name
             if (!agent.batchName) {
               agent.batchName = currentBatchName;
             }
             agent.saveToStorage();
           });
-          setInsights(allInsights);
-          await new Promise(resolve => setTimeout(resolve, trainingSpeed));
         }
       }
       
       console.log('Training complete!');
+      
+      // PERFORMANCE FIX: Save Q-tables when training completes
+      agents.forEach(agent => agent.saveToStorage());
+      console.log('💾 Saved final Q-tables');
+      
       setIsTraining(false);
       isTrainingRef.current = false;
       const finalInsights: string[] = [];
       agents.forEach(agent => {
         finalInsights.push(`=== ${agent.name} ===`);
-        finalInsights.push(...agent.getInsights());
+        // Full insights for final display
+        finalInsights.push(...agent.getInsights(false));
         finalInsights.push('');
       });
       setInsights(finalInsights);

@@ -1,0 +1,109 @@
+// Web Worker for parallel training
+import { LearningAgent } from './learning';
+import { createMatch } from '../engine/match';
+import { decideAI } from '../ai/personas';
+
+// Worker message types
+interface TrainMessage {
+  type: 'train';
+  episodes: number;
+  agentNames: string[];
+  workerId: number;
+}
+
+interface ProgressMessage {
+  type: 'progress';
+  message: string;
+}
+
+interface CompleteMessage {
+  type: 'complete';
+  results: any;
+}
+
+interface ErrorMessage {
+  type: 'error';
+  error: string;
+}
+
+// Handle messages from main thread
+self.onmessage = async (e: MessageEvent<TrainMessage>) => {
+  if (e.data.type === 'train') {
+    try {
+      await runTraining(e.data);
+    } catch (error) {
+      const errorMsg: ErrorMessage = {
+        type: 'error',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+      self.postMessage(errorMsg);
+    }
+  }
+};
+
+async function runTraining(config: TrainMessage) {
+  const { episodes, agentNames, workerId } = config;
+  
+  // Create agents for this worker
+  const agents = agentNames.map(name => new LearningAgent({}, `${name}-worker${workerId}`));
+  
+  // Send progress
+  const progressMsg: ProgressMessage = {
+    type: 'progress',
+    message: `Starting ${episodes} episodes with ${agents.length} agents`
+  };
+  self.postMessage(progressMsg);
+  
+  // Run training episodes
+  for (let i = 0; i < episodes; i++) {
+    // Create match
+    const match = createMatch({
+      playerNames: agentNames,
+      randomizeStart: true
+    });
+    
+    // Assign agents to players
+    agents.forEach((agent, idx) => {
+      if (match.players[idx]) {
+        match.players[idx].persona = agent.name;
+      }
+    });
+    
+    // Run game until complete
+    let turnCount = 0;
+    const maxTurns = 100;
+    
+    while (match.winnerId === undefined && turnCount < maxTurns) {
+      const currentPlayer = match.players[match.turnIdx];
+      
+      // Get AI decision
+      const decision = decideAI(match, currentPlayer.id);
+      
+      // Apply decision and learn
+      // ... game logic here ...
+      
+      turnCount++;
+    }
+    
+    // Update progress periodically
+    if (i % 10 === 0) {
+      const progressMsg: ProgressMessage = {
+        type: 'progress',
+        message: `Worker ${workerId}: Completed ${i}/${episodes} episodes`
+      };
+      self.postMessage(progressMsg);
+    }
+  }
+  
+  // Export results
+  const results = agents.map(agent => ({
+    name: agent.name,
+    knowledge: agent.exportKnowledge()
+  }));
+  
+  const completeMsg: CompleteMessage = {
+    type: 'complete',
+    results
+  };
+  self.postMessage(completeMsg);
+}

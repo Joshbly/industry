@@ -10,7 +10,7 @@ import {
   advanceTurn 
 } from '../engine/match';
 import { decideAI } from '../ai/personas';
-import { bestLegalGreedy, bestSafeIllegalGreedy } from '../engine/evaluation';
+import { bestLegalGreedy, bestSafeIllegalGreedy, isLegalExact } from '../engine/evaluation';
 import { rawValue } from '../engine/deck';
 import { reorganizeGreedy } from '../engine/audits';
 
@@ -164,7 +164,7 @@ const useGameStore = create<GameStore>((set, get) => ({
     if (currentPlayer.persona !== 'Human') return;
     
     let newMatch = applyProduction(match, currentPlayer.id, selectedCards, 'legal');
-    const points = Math.round(rawValue(selectedCards) * 0.50 + 8);  // Updated from 0.70 to match new scoring
+    const points = Math.round(rawValue(selectedCards) * 0.30);  // 30% of raw - heavily taxed
     
     get().addLog(`${currentPlayer.name} played LEGAL for ${points} points`);
     get().events.push({
@@ -305,13 +305,20 @@ const useGameStore = create<GameStore>((set, get) => ({
     
     const target = match.players[targetId];
     const { leftover } = reorganizeGreedy(target.floor);
-    const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier
+    // Only fine the value of illegal cards that needed reorganization
+    const illegalCardsValue = target.floorGroups
+      ?.filter(group => !isLegalExact(group))  // Check if group is illegal
+      .reduce((sum, group) => sum + rawValue(group), 0) || rawValue(target.floor);
+    const reorganizationFine = Math.round(illegalCardsValue * 0.25);
+    const confiscationPenalty = Math.round(rawValue(leftover) * 1.5);
+    const totalFine = reorganizationFine + confiscationPenalty;
+    const auditorShare = Math.round(reorganizationFine * 0.5) + confiscationPenalty;
     
-    get().addLog(`${currentPlayer.name} audited ${target.name} for ${fine} points`);
+    get().addLog(`${currentPlayer.name} audited ${target.name}! Target pays ${totalFine} (Auditor gets ${auditorShare})`);
     get().events.push({
       type: 'INTERNAL',
       timestamp: Date.now(),
-      data: { accuserId: currentPlayer.id, targetId, fine }
+      data: { accuserId: currentPlayer.id, targetId, fine: totalFine }
     });
     
     set({ match: newMatch });
@@ -332,7 +339,14 @@ const useGameStore = create<GameStore>((set, get) => ({
     
     const target = match.players[targetId];
     const { leftover } = reorganizeGreedy(target.floor);
-    const fine = Math.round(rawValue(leftover) * 1.5); // 1.5x multiplier
+    // Only fine the value of illegal cards that needed reorganization
+    const illegalCardsValue = target.floorGroups
+      ?.filter(group => !isLegalExact(group))  // Check if group is illegal
+      .reduce((sum, group) => sum + rawValue(group), 0) || rawValue(target.floor);
+    const reorganizationFine = Math.round(illegalCardsValue * 0.25);
+    const confiscationPenalty = Math.round(rawValue(leftover) * 1.5);
+    const totalFine = reorganizationFine + confiscationPenalty;
+    const auditorShare = Math.round(reorganizationFine * 0.5) + confiscationPenalty;
     
     // Show the discarded cards in the log
     const cardStr = cards.map(c => {
@@ -341,11 +355,11 @@ const useGameStore = create<GameStore>((set, get) => ({
       return `${rank}${suit}`;
     }).join(' ');
     
-    get().addLog(`${currentPlayer.name} audited ${target.name} using [${cardStr}] for ${fine} points`);
+    get().addLog(`${currentPlayer.name} audited ${target.name} using [${cardStr}]! Target pays ${totalFine} (Auditor gets ${auditorShare})`);
     get().events.push({
       type: 'INTERNAL',
       timestamp: Date.now(),
-      data: { accuserId: currentPlayer.id, targetId, fine, cards }
+      data: { accuserId: currentPlayer.id, targetId, fine: totalFine, cards }
     });
     
     set({ match: newMatch, selectedCards: [] });

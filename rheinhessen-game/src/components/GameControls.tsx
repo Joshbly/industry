@@ -89,7 +89,7 @@ export function GameControls() {
           )}
           {!canPlayLegal && canPlayIllegal && (
             <div className="text-sm text-yellow-400">
-              Illegal Points: {scoreIllegal(rawValue(selectedCards), match.auditTrack).points}
+              Illegal Points: {scoreIllegal(rawValue(selectedCards)).points}
             </div>
           )}
           <button

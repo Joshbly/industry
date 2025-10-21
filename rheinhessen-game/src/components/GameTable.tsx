@@ -79,11 +79,11 @@ export function GameTable() {
     }
     
     // Warning at high audit levels
-    if (match.auditTrack >= 3) {
-      ctx.fillStyle = match.auditTrack === 4 ? '#ef4444' : '#f59e0b';
+    if (match.auditTrack >= 4) {
+      ctx.fillStyle = match.auditTrack === 4 ? '#f59e0b' : '#ef4444';
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(match.auditTrack === 4 ? '⚠ NEXT SPIKE = EXTERNAL!' : '⚠ HIGH RISK', 480, 27);
+      ctx.fillText(match.auditTrack === 4 ? '⚠ HIGH RISK' : '⚠ NEXT SPIKE = EXTERNAL!', 480, 27);
     }
     
     // Draw deck count

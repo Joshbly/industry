@@ -36,7 +36,7 @@ export function GameControlsNew() {
   // Calculate potential scores for selected cards
   const selectedRaw = rawValue(selectedCards);
   const legalScore = selectedCards.length > 0 ? scoreLegal(selectedRaw) : 0;
-  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw, match.auditTrack) : null;
+  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw) : null;
   
   return (
     <div className="bg-gradient-to-r from-indigo-900 to-purple-900 rounded-lg p-4 shadow-xl">

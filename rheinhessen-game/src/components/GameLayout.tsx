@@ -121,7 +121,7 @@ export function GameLayout() {
   };
   
   const legalPoints = selectedCards.length > 0 ? scoreLegal(selectedRaw) : 0;
-  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw, match.auditTrack) : null;
+  const illegalResult = selectedCards.length > 0 ? scoreIllegal(selectedRaw) : null;
   
   return (
     <div className="h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 overflow-hidden flex flex-col select-none">
@@ -158,7 +158,7 @@ export function GameLayout() {
               </div>
             ))}
           </div>
-          {match.auditTrack >= 3 && (
+          {match.auditTrack >= 4 && (
             <div className="text-orange-400 font-bold animate-pulse">
               {match.auditTrack === 4 ? '⚠️ DANGER!' : 'HIGH RISK'}
             </div>
